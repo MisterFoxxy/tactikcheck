@@ -29,19 +29,16 @@ def env(var: str, default: Optional[str] = None) -> Optional[str]:
     return v
 
 def to_millis(date_str: str) -> int:
-    """YYYY-MM-DD -> epoch millis (UTC 00:00)."""
     d = dt.datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
     return int(d.timestamp() * 1000)
 
 def score_to_cp(score: chess.engine.PovScore) -> int:
-    """Convert Stockfish score to signed centipawns. Mate -> huge value."""
     if score.is_mate():
         m = score.mate()
         return 100000 if m and m > 0 else -100000
     return int(score.score(mate_score=100000))
 
 def classify(delta_cp: int, thresholds: Dict[str, int]) -> Optional[str]:
-    """Return 'inaccuracy' | 'mistake' | 'blunder' or None based on cp loss (>=)."""
     if delta_cp >= thresholds["blunder"]:
         return "blunder"
     if delta_cp >= thresholds["mistake"]:
@@ -54,13 +51,10 @@ def lichess_ply_link(game_id: str, ply: int) -> str:
     return f"https://lichess.org/{game_id}#{ply}"
 
 def split_pgn_bulk(text: str) -> List[str]:
-    """Разбить bulk-PGN на отдельные партии (робастно)."""
     text = text.strip()
     if not text:
         return []
-    # Делим по двум переводам строки ПЕРЕД началом новой партии
-    parts = re.split(r'\r?\n\r?\n(?=\[Event )', text)
-    return [p.strip() for p in parts if p.strip()]
+    return [p.strip() for p in re.split(r'\r?\n\r?\n(?=\[Event )', text) if p.strip()]
 
 # ---- Core analysis -----------------------------------------------------------
 
@@ -78,11 +72,11 @@ class Analyzer:
         depth: int = 14,
         threads: int = 2,
         hash_mb: int = 256,
-        who: Tuple[bool, bool] = (True, True),  # (white, black)
+        who: Tuple[bool, bool] = (True, True),
         thresholds: Dict[str, int] = None,
         min_cp_show: int = 50,
     ) -> None:
-        self.user = user            # может прийти как строка/список — нормализуем
+        self.user = user
         self.token = token
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -97,12 +91,12 @@ class Analyzer:
         self.thresholds = thresholds or {"inaccuracy": 50, "mistake": 150, "blunder": 300}
         self.stockfish_path = stockfish_path or env("STOCKFISH_PATH", "stockfish")
         self.client = self._make_client()
-        self.engine = None  # lazy
+        self.engine = None
         self.who = who
 
-    # ---------- Normalization & diagnostics ----------
+    # --- Utils ---------------------------------------------------------------
+
     def _username(self) -> str:
-        """Превращает self.user в обычную строку. Разворачивает вложенные списки."""
         u = self.user
         while isinstance(u, (list, tuple)) and len(u) == 1:
             u = u[0]
@@ -122,19 +116,15 @@ class Analyzer:
 
     def _debug_params(self, params: Dict[str, Any]):
         safe = dict(params)
-        if "since" in safe:
-            safe["since"] = f"{safe['since']} (ms)"
-        if "until" in safe:
-            safe["until"] = f"{safe['until']} (ms)"
+        if "since" in safe: safe["since"] = f"{safe['since']} (ms)"
+        if "until" in safe: safe["until"] = f"{safe['until']} (ms)"
         print(f"Request params: {safe}", file=sys.stderr)
 
     def _make_client(self):
-        """Create Lichess client (совместимо с berserk 0.14.x)."""
         if self.token:
             session = berserk.TokenSession(self.token)
             return berserk.Client(session=session)
-        else:
-            return berserk.Client()
+        return berserk.Client()
 
     # --- Engine --------------------------------------------------------------
 
@@ -154,7 +144,6 @@ class Analyzer:
     # --- Download ------------------------------------------------------------
 
     def _download_via_berserk(self, uname: str, params: Dict[str, Any]) -> List[str]:
-        """Основной путь выгрузки через berserk."""
         self._debug_params(params)
         pgn_iter = self.client.games.export_by_player(uname, **params)
         pgns: List[str] = []
@@ -166,36 +155,25 @@ class Analyzer:
             else:
                 pgn = (item or {}).get("pgn", "").strip()
             if pgn:
-                # Вдруг это bulk-PGN (несколько партий в одной строке)
-                if "[Event " in pgn and "\n\n[Event " in pgn:
+                if "\n\n[Event " in pgn:
                     pgns.extend(split_pgn_bulk(pgn))
                 else:
                     pgns.append(pgn)
         return pgns
 
     def _download_via_http(self, uname: str, params: Dict[str, Any]) -> List[str]:
-        """Резервный путь: сырое обращение к /api/games/user."""
         query = {
             "max": params.get("max", self.max_games),
-            "moves": "true",
-            "opening": "true",
-            "clocks": "false",
-            "evals": "false",
+            "moves": "true", "opening": "true", "clocks": "false", "evals": "false",
         }
-        if "since" in params:
-            query["since"] = str(params["since"])
-        if "until" in params:
-            query["until"] = str(params["until"])
-        if "perf_type" in params and params["perf_type"]:
-            query["perfType"] = params["perf_type"]  # у REST camelCase
+        if "since" in params: query["since"] = str(params["since"])
+        if "until" in params: query["until"] = str(params["until"])
+        if params.get("perf_type"): query["perfType"] = params["perf_type"]
 
         url = f"https://lichess.org/api/games/user/{urllib.parse.quote(uname)}?{urllib.parse.urlencode(query)}"
-        req = urllib.request.Request(url)
-        req.add_header("Accept", "application/x-chess-pgn")
-        req.add_header("User-Agent", "tactikcheck/1.0")
+        req = urllib.request.Request(url, headers={"Accept": "application/x-chess-pgn", "User-Agent": "tactikcheck/1.0"})
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
-
         print(f"HTTP fallback GET {url}", file=sys.stderr)
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
@@ -207,27 +185,15 @@ class Analyzer:
         self._assert_user_exists()
         uname = self._username()
 
-        base_params = {
-            "max": self.max_games,
-            "moves": True,
-            "opening": True,
-            "clocks": False,
-            "evals": False,
-            "as_pgn": True,          # построчные PGN
-        }
-        if self.since:
-            base_params["since"] = to_millis(self.since)
-        if self.until:
-            base_params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
+        base_params = {"max": self.max_games, "moves": True, "opening": True, "clocks": False, "evals": False, "as_pgn": True}
+        if self.since: base_params["since"] = to_millis(self.since)
+        if self.until: base_params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
 
         attempts: List[Dict[str, Any]] = []
         if self.perf:
-            p = dict(base_params)
-            p["perf_type"] = ",".join(self.perf)   # snake_case для berserk
-            attempts.append(p)
-        attempts.append(dict(base_params))          # без perf
+            p = dict(base_params); p["perf_type"] = ",".join(self.perf); attempts.append(p)
+        attempts.append(dict(base_params))
 
-        # 1) Пробуем через berserk (с perf -> без perf)
         all_pgns: List[str] = []
         for idx, params in enumerate(attempts, 1):
             print(f"Downloading games for {uname} via berserk (attempt {idx}/{len(attempts)})...", file=sys.stderr)
@@ -235,34 +201,24 @@ class Analyzer:
                 pgns = self._download_via_berserk(uname, params)
                 print(f"Got {len(pgns)} PGNs on attempt {idx} (berserk).", file=sys.stderr)
                 all_pgns = pgns
-                if pgns:
-                    break
+                if pgns: break
             except Exception as e:
                 print(f"berserk attempt {idx} failed: {e}", file=sys.stderr)
 
-        # 2) Если по-прежнему пусто — HTTP fallback
         if not all_pgns:
             try:
                 print("Switching to HTTP fallback...", file=sys.stderr)
-                # сначала с perf (если был), потом без
                 for idx, params in enumerate(attempts, 1):
                     pgns = self._download_via_http(uname, params)
-                    if pgns:
-                        all_pgns = pgns
-                        break
+                    if pgns: all_pgns = pgns; break
             except Exception as e:
                 print(f"HTTP fallback failed: {e}", file=sys.stderr)
 
         if not all_pgns:
-            raise RuntimeError(
-                "No games fetched. Reasons: wrong username, too strict 'perf' filter, "
-                "or account has no public games in selected modes."
-            )
+            raise RuntimeError("No games fetched. Reasons: wrong username, filters, or no public games.")
 
-        # Диагностика: показываем первые 200 символов первого PGN
         preview = (all_pgns[0] or "")[:200].replace("\n", " ")
         print(f"PGN[0] preview: {preview} ...", file=sys.stderr)
-
         return all_pgns
 
     # --- Analysis ------------------------------------------------------------
@@ -299,21 +255,24 @@ class Analyzer:
         while not node.is_end():
             node = node.variation(0)
             move = node.move
-            side_to_move = board.turn  # before making the move
+            side_to_move = board.turn
             ply += 1
 
             mover_is_white = side_to_move
             if (mover_is_white and not self.who[0]) or ((not mover_is_white) and not self.who[1]):
-                board.push(move)
-                continue
+                board.push(move); continue
 
-            info_best = engine.analyse(board, limit=limit, multipv=1)
+            # --- устойчиво к разным версиям python-chess ---
+            info_best_raw = engine.analyse(board, limit=limit, multipv=1)
+            info_best = info_best_raw[0] if isinstance(info_best_raw, list) else info_best_raw
             best_cp = score_to_cp(info_best["score"].pov(side_to_move))
 
-            info_played = engine.analyse(board, limit=limit, root_moves=[move])
+            info_played_raw = engine.analyse(board, limit=limit, root_moves=[move])
+            info_played = info_played_raw[0] if isinstance(info_played_raw, list) else info_played_raw
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
+            # -------------------------------------------------
 
-            delta = best_cp - played_cp  # how much worse than best
+            delta = best_cp - played_cp
             label = classify(delta, self.thresholds)
 
             board.push(move)
@@ -356,7 +315,6 @@ class Analyzer:
             date = g.get("date", "")
             opening = g.get("opening", "")
             tc = g.get("time_control", "")
-
             for e in g.get("errors", []):
                 total_errors += 1
                 svg = self._svg_from_fen(e["fen_after"])
@@ -436,9 +394,9 @@ class Analyzer:
     .meta, .sub {{ color: var(--muted); font-size: 13px; margin-top: 6px; }}
     .cp {{ margin-top: 8px; font-variant-numeric: tabular-nums; }}
     .tag {{ font-size:12px; text-transform:uppercase; letter-spacing:.6px; padding:2px 8px; border-radius: 999px; }}
-    .tag.inaccuracy {{ background: var(--inacc); color: #000; }}
-    .tag.mistake {{ background: var(--mist); color: #000; }}
-    .tag.blunder {{ background: var(--blun); color: #fff; }}
+    .tag.inaccuracy {{ background: var(--inacc); color:#000; }}
+    .tag.mistake {{ background: var(--mist); color:#000; }}
+    .tag.blunder {{ background: var(--blun); color:#fff; }}
     footer {{ text-align:center; color: var(--muted); font-size:12px; padding: 16px; }}
   </style>
 </head>
@@ -466,29 +424,25 @@ class Analyzer:
 <script>
 const qs = s => document.querySelector(s);
 const qsa = s => Array.from(document.querySelectorAll(s));
-const f = {{ inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
-            white: qs('#f-white'), black: qs('#f-black'), cp: qs('#f-cp'), cpv: qs('#f-cpv') }};
+const f = { inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
+            white: qs('#f-white'), black: qs('#f-black'), cp: qs('#f-cp'), cpv: qs('#f-cpv') };
 
-function applyFilters() {{
-  const show = {{
-    inaccuracy: f.inacc.checked,
-    mistake: f.mist.checked,
-    blunder: f.blun.checked
-  }};
-  const who = {{ white: f.white.checked, black: f.black.checked }};
+function applyFilters() {
+  const show = { inaccuracy: f.inacc.checked, mistake: f.mist.checked, blunder: f.blun.checked };
+  const who = { white: f.white.checked, black: f.black.checked };
   const mincp = parseInt(f.cp.value, 10) || 0;
   f.cpv.textContent = mincp;
-  qsa('.card').forEach(card => {{
+  qsa('.card').forEach(card => {
     const cat = card.dataset.cat;
     const side = card.dataset.who;
     const cp = parseInt(card.dataset.cp, 10);
     const ok = !!show[cat] && !!who[side] && cp >= mincp;
     card.style.display = ok ? '' : 'none';
-  }});
-}}
-['change','input'].forEach(ev => {{
+  });
+}
+['change','input'].forEach(ev => {
   [f.inacc, f.mist, f.blun, f.white, f.black, f.cp].forEach(el => el.addEventListener(ev, applyFilters));
-}});
+});
 applyFilters();
 </script>
 </body>
@@ -500,20 +454,20 @@ applyFilters();
 
 def main():
     p = argparse.ArgumentParser(description="Lichess Error Gallery")
-    p.add_argument("--user", required=True, help="Lichess username")
-    p.add_argument("--token", default=os.environ.get("LICHESS_TOKEN", ""), help="Lichess API token (optional)")
-    p.add_argument("--out", default="out", help="Output directory")
+    p.add_argument("--user", required=True)
+    p.add_argument("--token", default=os.environ.get("LICHESS_TOKEN", ""))
+    p.add_argument("--out", default="out")
     p.add_argument("--max-games", type=int, default=200)
-    p.add_argument("--since", help="YYYY-MM-DD")
-    p.add_argument("--until", help="YYYY-MM-DD")
-    p.add_argument("--perf", help="Filter by perfs, comma-separated: bullet,blitz,rapid,classical,correspondence")
-    p.add_argument("--depth", type=int, default=14, help="Stockfish analysis depth")
-    p.add_argument("--threads", type=int, default=2, help="Stockfish Threads")
-    p.add_argument("--hash-mb", type=int, default=256, help="Stockfish Hash (MB)")
-    p.add_argument("--who", default="white,black", help="Which side to flag: white,black")
-    p.add_argument("--min-cp", type=int, default=50, help="Minimum CP loss to show (inaccuracy threshold)")
-    p.add_argument("--mistake", type=int, default=150, help="CP loss threshold for 'mistake'")
-    p.add_argument("--blunder", type=int, default=300, help="CP loss threshold for 'blunder'")
+    p.add_argument("--since")
+    p.add_argument("--until")
+    p.add_argument("--perf")
+    p.add_argument("--depth", type=int, default=14)
+    p.add_argument("--threads", type=int, default=2)
+    p.add_argument("--hash-mb", type=int, default=256)
+    p.add_argument("--who", default="white,black")
+    p.add_argument("--min-cp", type=int, default=50)
+    p.add_argument("--mistake", type=int, default=150)
+    p.add_argument("--blunder", type=int, default=300)
     args = p.parse_args()
 
     out_dir = Path(args.out)
