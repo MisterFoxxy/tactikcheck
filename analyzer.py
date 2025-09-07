@@ -205,7 +205,7 @@ class Analyzer:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
         pgns = split_pgn_bulk(raw)
-        print(f"HTTP fallback got {len(pgns)} PGNs}.", file=sys.stderr)
+        print(f"HTTP fallback got {len(pgns)} PGNs.", file=sys.stderr)  # <-- fixed
         return pgns
 
     def fetch_pgns(self) -> List[str]:
