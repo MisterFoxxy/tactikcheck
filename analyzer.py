@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Lichess Error Gallery: download games, analyze with Stockfish, export a static HTML gallery.
+Lichess Error Gallery: download games, analyze with Stockfish, export a static HTML gallery (with interactive trainer).
 """
 import argparse
 import datetime as dt
@@ -64,7 +64,6 @@ def split_pgn_bulk(text: str) -> List[str]:
     text = text.strip()
     if not text:
         return []
-    # Разделяем по пустой строке ПЕРЕД новым заголовком [Event ...]
     parts = re.split(r'\r?\n\r?\n(?=\[Event )', text)
     return [p.strip() for p in parts if p.strip()]
 
@@ -306,15 +305,24 @@ class Analyzer:
                 board.push(move)
                 continue
 
-            # --- best line (устойчиво к dict/list) ---
+            fen_before = board.fen()
+
+            # best line
             info_best_raw = engine.analyse(board, limit=limit, multipv=1)
             info_best = info_best_raw[0] if isinstance(info_best_raw, list) else info_best_raw
             best_cp = score_to_cp(info_best["score"].pov(side_to_move))
 
-            # --- score of played move (устойчиво к dict/list) ---
+            # played move score
             info_played_raw = engine.analyse(board, limit=limit, root_moves=[move])
             info_played = info_played_raw[0] if isinstance(info_played_raw, list) else info_played_raw
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
+
+            # robust best move via engine.play (не зависит от наличия pv)
+            best_move_obj = engine.play(board, limit).move
+            best_uci = best_move_obj.uci()
+            best_san = board.san(best_move_obj)
+            played_uci = move.uci()
+            played_san = board.san(move)
 
             delta = best_cp - played_cp
             label = classify(delta, self.thresholds)
@@ -332,7 +340,12 @@ class Analyzer:
                     "san": san,
                     "cp_loss": delta,
                     "category": label,
+                    "fen_before": fen_before,
                     "fen_after": board.fen(),
+                    "best_uci": best_uci,
+                    "best_san": best_san,
+                    "played_uci": played_uci,
+                    "played_san": played_san,
                 })
 
         return result
@@ -350,20 +363,26 @@ class Analyzer:
         total_games = len(analyzed)
         total_errors = 0
 
+        idx = 0
         for g in analyzed:
             gid = g.get("game_id", "") or ""
             white = g.get("white", "?"); black = g.get("black", "?")
             welo = g.get("white_elo", "") or ""; belo = g.get("black_elo", "") or ""
             date = g.get("date", ""); opening = g.get("opening", ""); tc = g.get("time_control", "")
             for e in g.get("errors", []):
+                idx += 1
                 total_errors += 1
                 svg = self._svg_from_fen(e["fen_after"])
                 cards.append({
+                    "id": idx,
                     "game_id": gid,
                     "white": white, "black": black, "welo": welo, "belo": belo,
                     "date": date, "opening": opening, "tc": tc,
                     "ply": e["ply"], "move_no": e["move_no"], "san": e["san"],
                     "who": e["who"], "cp_loss": e["cp_loss"], "category": e["category"],
+                    "fen_before": e["fen_before"],
+                    "best_uci": e["best_uci"], "best_san": e["best_san"],
+                    "played_uci": e["played_uci"], "played_san": e["played_san"],
                     "link": lichess_ply_link(gid, e["ply"]),
                     "svg": svg,
                 })
@@ -381,7 +400,9 @@ class Analyzer:
             meta = f"{esc(c['white'])} ({esc(c['welo'])}) — {esc(c['black'])} ({esc(c['belo'])})"
             sub = f"{esc(c['date'])} • {esc(c['opening'])} • {esc(c['tc'])}"
             items.append(f"""
-<div class="card" data-cat="{c['category']}" data-who="{c['who']}" data-cp="{c['cp_loss']}">
+<div class="card" data-cat="{c['category']}" data-who="{c['who']}" data-cp="{c['cp_loss']}"
+     data-fen="{esc(c['fen_before'])}" data-best="{esc(c['best_uci'])}" data-link="{esc(c['link'])}" data-orient="{('white' if c['who']=='white' else 'black')}"
+>
   <div class="thumb">{c['svg']}</div>
   <div class="info">
     <div class="title">
@@ -392,6 +413,14 @@ class Analyzer:
     <div class="sub">{sub}</div>
     <div class="cp">Δ {c['cp_loss']} cp</div>
     <div class="game"><a href="https://lichess.org/{esc(c['game_id'])}" target="_blank" rel="noopener">{esc(c['game_id'])}</a></div>
+
+    <div class="trainer">
+      <div id="board-{c['id']}" class="board"></div>
+      <div class="train-ui">
+        <span class="msg">Сыграй лучший ход.</span>
+        <a class="ok-btn" href="{esc(c['link'])}" target="_blank" rel="noopener" style="display:none;">✅ Успех — открыть на Lichess</a>
+      </div>
+    </div>
   </div>
 </div>
 """)
@@ -404,6 +433,12 @@ class Analyzer:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lichess Error Gallery</title>
+
+  <!-- Chessboard.js + chess.js (CDN) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chess.js@0.13.4/chess.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
   <style>
     :root {
       --bg: #0b0c10;
@@ -415,6 +450,8 @@ class Analyzer:
       --blun:  #ff3b30;
       --chip:  #2a2f37;
       --accent:#4ea1ff;
+      --ok:    #16c47f;
+      --bad:   #ff4757;
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text);}
@@ -439,6 +476,11 @@ class Analyzer:
     .tag.inaccuracy { background: var(--inacc); color:#000; }
     .tag.mistake { background: var(--mist); color:#000; }
     .tag.blunder { background: var(--blun); color:#fff; }
+    .trainer { display:flex; gap:12px; align-items:flex-start; margin-top:12px; }
+    .board { width: 360px; max-width: 100%; }
+    .train-ui { display:flex; flex-direction:column; gap:8px; font-size: 13px; color: var(--muted); }
+    .ok-btn { background: var(--ok); color:#000; text-decoration:none; padding:8px 10px; border-radius:8px; display:inline-block; font-weight:600; }
+    .bad { color: var(--bad); }
     footer { text-align:center; color: var(--muted); font-size:12px; padding: 16px; }
   </style>
 </head>
@@ -462,12 +504,15 @@ class Analyzer:
 <main class="grid" id="grid">
   %(items)s
 </main>
-<footer>Статический отчёт, создан локально. Ссылки ведут на соответствующие позиции в партиях на Lichess.</footer>
+<footer>Статический отчёт + тренажёр. Ссылки ведут на соответствующие позиции в партиях на Lichess.</footer>
+
 <script>
 const qs = s => document.querySelector(s);
 const qsa = s => Array.from(document.querySelectorAll(s));
 const f = { inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
             white: qs('#f-white'), black: qs('#f-black'), cp: qs('#f-cp'), cpv: qs('#f-cpv') };
+
+// Фильтры карточек
 function applyFilters() {
   const show = { inaccuracy: f.inacc.checked, mistake: f.mist.checked, blunder: f.blun.checked };
   const who = { white: f.white.checked, black: f.black.checked };
@@ -485,6 +530,55 @@ function applyFilters() {
   [f.inacc, f.mist, f.blun, f.white, f.black, f.cp].forEach(el => el.addEventListener(ev, applyFilters));
 });
 applyFilters();
+
+// Тренажёр
+function initTrainer() {
+  qsa('.card').forEach((card, i) => {
+    const fen = card.dataset.fen;
+    const best = (card.dataset.best || '').trim().toLowerCase(); // uci
+    const link = card.dataset.link;
+    const orient = (card.dataset.orient === 'white') ? 'white' : 'black';
+    const boardEl = card.querySelector('.board');
+    const okBtn = card.querySelector('.ok-btn');
+    const msgEl = card.querySelector('.msg');
+
+    if (!fen || !boardEl || !best) return;
+
+    const game = new Chess(fen);
+    const cfg = {
+      position: fen,
+      draggable: true,
+      orientation: orient,
+      pieceTheme: undefined, // дефолтные спрайты
+      onDrop: (source, target) => {
+        // пробуем сделать ход
+        const move = game.move({ from: source, to: target, promotion: 'q' });
+        if (move === null) return 'snapback';
+        // строим uci
+        const uci = (source + target + (move.promotion ? move.promotion : '')).toLowerCase();
+
+        if (uci === best) {
+          msgEl.textContent = `Верно! Лучший ход: ${move.san}`;
+          msgEl.classList.remove('bad');
+          okBtn.style.display = 'inline-block';
+        } else {
+          msgEl.textContent = `Неверно. Попробуй ещё раз.`;
+          msgEl.classList.add('bad');
+          // откат
+          setTimeout(() => {
+            game.undo();
+            board.position(game.fen());
+          }, 250);
+        }
+      }
+    };
+    const board = Chessboard(boardEl, cfg);
+
+    // Ресайз на всякий
+    window.addEventListener('resize', () => { board.resize(); });
+  });
+}
+document.addEventListener('DOMContentLoaded', initTrainer);
 </script>
 </body>
 </html>
