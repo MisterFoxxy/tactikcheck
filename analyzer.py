@@ -70,7 +70,7 @@ class Analyzer:
         thresholds: Dict[str, int] = None,
         min_cp_show: int = 50,
     ) -> None:
-        self.user = user
+        self.user = user            # может прийти как строка/список — нормализуем позже
         self.token = token
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -88,26 +88,28 @@ class Analyzer:
         self.engine = None  # lazy
         self.who = who
 
-    def _make_client(self):
-        """Create Lichess client (совместимо с berserk 0.14.x)."""
-        if self.token:
-            session = berserk.TokenSession(self.token)
-            return berserk.Client(session=session)
-        else:
-            return berserk.Client()
-
-    # ---------- Diagnostics ----------
-    def _assert_user_exists(self):
-        """Проверка, что пользователь существует (приводим к списку строк)."""
+    # ---------- Normalization & diagnostics ----------
+    def _username(self) -> str:
+        """Превращает self.user в обычную строку. Разворачивает вложенные списки."""
         u = self.user
-        usernames = [str(x) for x in (u if isinstance(u, (list, tuple)) else [u])]
-        print(f"Verifying user(s): {usernames}", file=sys.stderr)
+        # разворачиваем одноэлементные списки/кортежи до тех пор, пока это контейнер
+        while isinstance(u, (list, tuple)) and len(u) == 1:
+            u = u[0]
+        # если по-прежнему список/кортеж — берём первый элемент
+        if isinstance(u, (list, tuple)):
+            u = u[0] if u else ""
+        return str(u)
+
+    def _assert_user_exists(self):
+        uname = self._username()
+        print(f"Verifying username: '{uname}'", file=sys.stderr)
         try:
-            info = self.client.users.get_by_id(usernames)
-            if not info:
-                raise RuntimeError(f"User '{self.user}' not found or has no public profile")
+            # одиночный надёжный вызов
+            info = self.client.users.get_public_data(uname)
+            if not info or ("id" not in info and "username" not in info):
+                raise RuntimeError(f"user '{uname}' not found or profile is private")
         except Exception as e:
-            raise RuntimeError(f"Failed to verify user '{self.user}': {e}")
+            raise RuntimeError(f"Failed to verify user '{uname}': {e}")
 
     def _debug_params(self, params: Dict[str, Any]):
         safe = dict(params)
@@ -116,6 +118,14 @@ class Analyzer:
         if "until" in safe:
             safe["until"] = f"{safe['until']} (ms)"
         print(f"Request params: {safe}", file=sys.stderr)
+
+    def _make_client(self):
+        """Create Lichess client (совместимо с berserk 0.14.x)."""
+        if self.token:
+            session = berserk.TokenSession(self.token)
+            return berserk.Client(session=session)
+        else:
+            return berserk.Client()
 
     # --- Engine --------------------------------------------------------------
 
@@ -136,6 +146,7 @@ class Analyzer:
 
     def fetch_pgns(self) -> List[str]:
         self._assert_user_exists()
+        uname = self._username()
 
         base_params = {
             "max": self.max_games,
@@ -154,17 +165,17 @@ class Analyzer:
         attempts: List[Dict[str, Any]] = []
         if self.perf:
             p = dict(base_params)
-            p["perf_type"] = ",".join(self.perf)  # snake_case для berserk
+            p["perf_type"] = ",".join(self.perf)   # snake_case для berserk
             attempts.append(p)
         # 2) запасной вариант — без perf
         attempts.append(dict(base_params))
 
         all_pgns: List[str] = []
         for idx, params in enumerate(attempts, 1):
-            print(f"Downloading games for {self.user} (attempt {idx}/{len(attempts)})...", file=sys.stderr)
+            print(f"Downloading games for {uname} (attempt {idx}/{len(attempts)})...", file=sys.stderr)
             self._debug_params(params)
             try:
-                pgn_iter = self.client.games.export_by_player(self.user, **params)
+                pgn_iter = self.client.games.export_by_player(uname, **params)
                 pgns: List[str] = []
                 for item in pgn_iter:
                     if isinstance(item, str):
@@ -175,15 +186,15 @@ class Analyzer:
                         pgns.append(pgn)
                 print(f"Got {len(pgns)} PGNs on attempt {idx}.", file=sys.stderr)
                 all_pgns = pgns
-                if pgns:  # если нашли хоть что-то — не пробуем дальше
+                if pgns:  # нашли — дальше не пробуем
                     break
             except Exception as e:
                 print(f"Fetch attempt {idx} failed: {e}", file=sys.stderr)
 
         if not all_pgns:
             raise RuntimeError(
-                "No games fetched. Likely reasons: wrong username, too strict 'perf' filter, "
-                "or the account has no public games in selected modes."
+                "No games fetched. Reasons: wrong username, too strict 'perf' filter, "
+                "or account has no public games in selected modes."
             )
         return all_pgns
 
@@ -191,22 +202,12 @@ class Analyzer:
 
     def analyze_pgn(self, pgn_text: str) -> Dict[str, Any]:
         if not pgn_text.strip():
-            return {
-                "game_id": "",
-                "white": "?", "black": "?",
-                "white_elo": "", "black_elo": "",
-                "date": "", "time_control": "", "opening": "",
-                "errors": [],
-            }
+            return {"game_id": "", "white": "?", "black": "?", "white_elo": "", "black_elo": "",
+                    "date": "", "time_control": "", "opening": "", "errors": []}
         game = chess.pgn.read_game(io.StringIO(pgn_text))
         if game is None:
-            return {
-                "game_id": "",
-                "white": "?", "black": "?",
-                "white_elo": "", "black_elo": "",
-                "date": "", "time_control": "", "opening": "",
-                "errors": [],
-            }
+            return {"game_id": "", "white": "?", "black": "?", "white_elo": "", "black_elo": "",
+                    "date": "", "time_control": "", "opening": "", "errors": []}
 
         headers = game.headers
         gid = headers.get("LichessURL", "").split("/")[-1] or headers.get("Site", "").split("/")[-1]
@@ -377,7 +378,7 @@ class Analyzer:
 <body>
 <header>
   <h1>Ляпы под микроскопом — Error Gallery</h1>
-  <div class="stats">Просканировано игр: <b>{total_games}</b> • Найдено позицій: <b>{total_errors}</b></div>
+  <div class="stats">Просканировано игр: <b>{total_games}</b> • Найдено позиций: <b>{total_errors}</b></div>
   <div class="filters">
     <span class="chip"><input type="checkbox" id="f-inacc" checked><label for="f-inacc">Inaccuracy</label></span>
     <span class="chip"><input type="checkbox" id="f-mist" checked><label for="f-mist">Mistake</label></span>
