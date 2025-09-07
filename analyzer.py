@@ -86,7 +86,7 @@ class Analyzer:
         self.stockfish_path = stockfish_path or env("STOCKFISH_PATH", "stockfish")
         self.client = self._make_client()
         self.engine = None  # lazy
-        self.who = who      # сохраняем флаг сторон
+        self.who = who
 
     def _make_client(self):
         """Create Lichess client (совместимо с berserk 0.14.x)."""
@@ -95,6 +95,25 @@ class Analyzer:
             return berserk.Client(session=session)
         else:
             return berserk.Client()
+
+    # ---------- Diagnostics ----------
+    def _assert_user_exists(self):
+        try:
+            info = self.client.users.get_by_id([self.user])
+            if not info:
+                raise RuntimeError(f"User '{self.user}' not found or has no public profile")
+        except Exception as e:
+            raise RuntimeError(f"Failed to verify user '{self.user}': {e}")
+
+    def _debug_params(self, params: Dict[str, Any]):
+        safe = dict(params)
+        if "since" in safe:
+            safe["since"] = f"{safe['since']} (ms)"
+        if "until" in safe:
+            safe["until"] = f"{safe['until']} (ms)"
+        print(f"Request params: {safe}", file=sys.stderr)
+
+    # --- Engine --------------------------------------------------------------
 
     def _engine(self) -> chess.engine.SimpleEngine:
         if self.engine is None:
@@ -112,35 +131,58 @@ class Analyzer:
     # --- Download ------------------------------------------------------------
 
     def fetch_pgns(self) -> List[str]:
-        params = {
+        self._assert_user_exists()
+
+        base_params = {
             "max": self.max_games,
             "moves": True,
             "opening": True,
             "clocks": False,
             "evals": False,
-            "as_pgn": True,          # получаем построчные PGN-строки
+            "as_pgn": True,          # построчные PGN
         }
         if self.since:
-            params["since"] = to_millis(self.since)
+            base_params["since"] = to_millis(self.since)
         if self.until:
-            params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
+            base_params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
+
+        # 1) попытка с perf, если задан
+        attempts: List[Dict[str, Any]] = []
         if self.perf:
-            params["perf_type"] = ",".join(self.perf)  # snake_case для berserk 0.14.x
+            p = dict(base_params)
+            p["perf_type"] = ",".join(self.perf)
+            attempts.append(p)
+        # 2) запасной вариант — без perf
+        attempts.append(dict(base_params))
 
-        print(f"Downloading games for {self.user} (max={self.max_games})...", file=sys.stderr)
-        pgn_iter = self.client.games.export_by_player(self.user, **params)
+        all_pgns: List[str] = []
+        for idx, params in enumerate(attempts, 1):
+            print(f"Downloading games for {self.user} (attempt {idx}/{len(attempts)})...", file=sys.stderr)
+            self._debug_params(params)
+            try:
+                pgn_iter = self.client.games.export_by_player(self.user, **params)
+                pgns: List[str] = []
+                for item in pgn_iter:
+                    if isinstance(item, str):
+                        pgn = item.strip()
+                    else:
+                        pgn = (item or {}).get("pgn", "").strip()
+                    if pgn:
+                        pgns.append(pgn)
+                print(f"Got {len(pgns)} PGNs on attempt {idx}.", file=sys.stderr)
+                all_pgns = pgns
+                if pgns:  # если нашли хоть что-то — не пробуем дальше
+                    break
+            except Exception as e:
+                print(f"Fetch attempt {idx} failed: {e}", file=sys.stderr)
 
-        pgns: List[str] = []
-        for item in pgn_iter:
-            if isinstance(item, str):
-                pgn = item.strip()
-            else:
-                pgn = (item or {}).get("pgn", "").strip()
-            if pgn:
-                pgns.append(pgn)
+        if not all_pgns:
+            raise RuntimeError(
+                "No games fetched. Likely reasons: wrong username, too strict 'perf' filter, "
+                "or the account has no public games in selected modes."
+            )
 
-        print(f"Downloaded {len(pgns)} PGNs.", file=sys.stderr)
-        return pgns
+        return all_pgns
 
     # --- Analysis ------------------------------------------------------------
 
