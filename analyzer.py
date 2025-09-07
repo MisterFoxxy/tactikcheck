@@ -543,4 +543,120 @@ function initTrainer() {
         const uci = (source + target + (move.promotion ? move.promotion : '')).toLowerCase();
         if (uci === best) {
           msgEl.textContent = `Верно! Лучший ход: ${move.san}`;
-          msgEl.classList.remove('bad
+          msgEl.classList.remove('bad');
+          okBtn.style.display = 'inline-block';
+        } else {
+          msgEl.textContent = `Неверно. Попробуй ещё раз.`;
+          msgEl.classList.add('bad');
+          setTimeout(() => {
+            game.undo();
+            board.position(game.fen());
+          }, 200);
+        }
+      }
+    };
+    const board = Chessboard(boardEl, cfg);
+
+    // Click-to-move (клик по клеткам)
+    let selected = null;
+    boardEl.addEventListener('click', (e) => {
+      const sqEl = e.target.closest('.square-55d63');
+      if (!sqEl) return;
+      const sq = sqEl.getAttribute('data-square');
+      const clearSel = () => boardEl.querySelectorAll('.square-55d63.selected').forEach(el => el.classList.remove('selected'));
+
+      if (!selected) {
+        selected = sq;
+        clearSel();
+        sqEl.classList.add('selected');
+        return;
+      }
+      // попытка хода
+      const move = game.move({ from: selected, to: sq, promotion: 'q' });
+      clearSel();
+      selected = null;
+      if (move === null) return;
+
+      const uci = (move.from + move.to + (move.promotion ? move.promotion : '')).toLowerCase();
+      if (uci === best) {
+        msgEl.textContent = `Верно! Лучший ход: ${move.san}`;
+        msgEl.classList.remove('bad');
+        okBtn.style.display = 'inline-block';
+      } else {
+        msgEl.textContent = `Неверно. Попробуй ещё раз.`;
+        msgEl.classList.add('bad');
+        setTimeout(() => {
+          game.undo();
+          board.position(game.fen());
+        }, 200);
+      }
+      board.position(game.fen());
+    });
+
+    window.addEventListener('resize', () => { board.resize(); });
+  });
+}
+document.addEventListener('DOMContentLoaded', initTrainer);
+</script>
+</body>
+</html>
+"""
+        return tpl % {"total_games": total_games, "total_errors": total_errors, "items": items_html}
+
+# ---------------------------------- CLI --------------------------------------
+
+def main():
+    p = argparse.ArgumentParser(description="Lichess Error Gallery")
+    p.add_argument("--user", required=True, help="Lichess username")
+    p.add_argument("--token", default=os.environ.get("LICHESS_TOKEN", ""), help="Lichess API token (optional)")
+    p.add_argument("--out", default="out", help="Output directory")
+    p.add_argument("--max-games", type=int, default=200)
+    p.add_argument("--since")
+    p.add_argument("--until")
+    p.add_argument("--perf", help="comma-separated: bullet,blitz,rapid,classical")
+    p.add_argument("--depth", type=int, default=14)
+    p.add_argument("--threads", type=int, default=2)
+    p.add_argument("--hash-mb", type=int, default=256)
+    p.add_argument("--who", default="white,black", help="which side to flag (white,black)")
+    p.add_argument("--min-cp", type=int, default=50)
+    p.add_argument("--mistake", type=int, default=150)
+    p.add_argument("--blunder", type=int, default=300)
+    args = p.parse_args()
+
+    out_dir = Path(args.out)
+    thresholds = {"inaccuracy": max(0, args.min_cp), "mistake": args.mistake, "blunder": args.blunder}
+    who = (("white" in args.who), ("black" in args.who))
+    perf = args.perf.split(",") if args.perf else []
+
+    analyzer = Analyzer(
+        user=args.user,
+        token=(args.token or None),
+        out_dir=out_dir,
+        max_games=args.max_games,
+        since=args.since,
+        until=args.until,
+        perf=perf,
+        stockfish_path=env("STOCKFISH_PATH", "stockfish"),
+        depth=args.depth,
+        threads=args.threads,
+        hash_mb=args.hash_mb,
+        who=who,
+        thresholds=thresholds,
+        min_cp_show=args.min_cp,
+    )
+
+    try:
+        pgns = analyzer.fetch_pgns()
+        analyzed: List[Dict[str, Any]] = []
+        for idx, pgn in enumerate(pgns, 1):
+            print(f"[{idx}/{len(pgns)}] Analyzing...", file=sys.stderr)
+            try:
+                analyzed.append(analyzer.analyze_pgn(pgn))
+            except Exception as e:
+                print(f"  Skipped game due to error: {e}", file=sys.stderr)
+        analyzer.render_gallery(analyzed)
+    finally:
+        analyzer.close()
+
+if __name__ == "__main__":
+    main()
