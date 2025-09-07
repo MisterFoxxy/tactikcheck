@@ -128,7 +128,7 @@ class Analyzer:
         if self.until:
             params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
         if self.perf:
-            params["perfType"] = ",".join(self.perf)
+            params["perf_type"] = ",".join(self.perf)
 
         print(f"Downloading games for {self.user} (max={self.max_games})...", file=sys.stderr)
         pgn_iter = self.client.games.export_by_player(self.user, **params)
