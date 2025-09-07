@@ -35,7 +35,7 @@ def score_to_cp(score: chess.engine.PovScore) -> int:
     """Convert Stockfish score to signed centipawns. Mate -> huge value."""
     s = score
     if s.is_mate():
-        m = s.mate()  # positive if mate for side to move in m plies, negative if mated
+        m = s.mate()
         return 100000 if m and m > 0 else -100000
     cp = s.score(mate_score=100000)
     return int(cp)
@@ -51,7 +51,6 @@ def classify(delta_cp: int, thresholds: Dict[str, int]) -> Optional[str]:
     return None
 
 def lichess_ply_link(game_id: str, ply: int) -> str:
-    """Anchor to a specific half-move (ply)."""
     return f"https://lichess.org/{game_id}#{ply}"
 
 # ---- Core analysis -----------------------------------------------------------
@@ -90,9 +89,10 @@ class Analyzer:
         self.stockfish_path = stockfish_path or env("STOCKFISH_PATH", "stockfish")
         self.client = self._make_client()
         self.engine = None  # lazy
+        self.who = who      # <-- ВАЖНО: сохраняем параметр who
 
     def _make_client(self):
-        """Create Lichess client. No timeout arg to support berserk 0.14.x."""
+        """Create Lichess client compatible with berserk 0.14.x (без timeout)."""
         if self.token:
             session = berserk.TokenSession(self.token)
             return berserk.Client(session=session)
@@ -128,7 +128,7 @@ class Analyzer:
         if self.until:
             params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
         if self.perf:
-            params["perf_type"] = ",".join(self.perf)
+            params["perf_type"] = ",".join(self.perf)  # <-- правильное имя аргумента
 
         print(f"Downloading games for {self.user} (max={self.max_games})...", file=sys.stderr)
         pgn_iter = self.client.games.export_by_player(self.user, **params)
@@ -336,8 +336,8 @@ class Analyzer:
 <script>
 const qs = s => document.querySelector(s);
 const qsa = s => Array.from(document.querySelectorAll(s));
-const f = { inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
-            white: qs('#f-white'), black: qs('#f-black'), cp: qs('#f-cp'), cpv: qs('#f-cpv') };
+const f = {{ inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
+            white: qs('#f-white'), black: qs('#f-black'), cp: qs('#f-cp'), cpv: qs('#f-cpv') }};
 
 function applyFilters() {{
   const show = {{
