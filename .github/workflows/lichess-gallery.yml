@@ -4,15 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       username:
-        description: 'MidFoxxy'
+        description: 'Lichess username'
         required: false
       perf:
         description: 'bullet,blitz,rapid,classical'
         required: false
         default: rapid,blitz
-  schedule:
-    - cron: '20 03 * * *'   # ежедневно 03:20 UTC
-
 permissions:
   contents: read
   pages: write
@@ -23,10 +20,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  DEFAULT_USER: your_lichess_username   # ← ЗАМЕНИ здесь!
+  DEFAULT_USER: MidFoxxy        # твой ник
   PERF: rapid,blitz
-  MAX_GAMES: '200'
-  DEPTH: '14'
+  MAX_GAMES: '10'               # временно 10
+  DEPTH: '12'                   # быстрее
   MIN_CP: '50'
   MISTAKE: '150'
   BLUNDER: '300'
