@@ -55,33 +55,56 @@ def _download(url: str, dst: Path):
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() and dst.stat().st_size > 0:
         return
-    req = urllib.request.Request(url, headers={"User-Agent":"tactikcheck/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "tactikcheck/1.0"})
     with urllib.request.urlopen(req, timeout=60) as r, open(dst, "wb") as f:
         f.write(r.read())
 
+def _download_try(urls: List[str], dst: Path):
+    last_err = None
+    for u in urls:
+        try:
+            _download(u, dst)
+            return
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"Failed to download {dst.name} from mirrors: {urls} ({last_err})")
+
 def ensure_assets(out_dir: Path):
     """
-    Кладём все зависимости локально, чтобы ничего не дёргать с CDN.
+    Кладём все зависимости локально, с несколькими зеркалами на случай 404.
     chess.js + chessboard.js + css + 12 спрайтов фигур.
     """
     assets = out_dir / "assets"
     js_dir = assets
     img_dir = assets / "img"
 
-    # Надёжные источники (Cloudflare/CDNJS + GitHub raw)
-    chess_js = "https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.13.4/chess.min.js"
-    board_js = "https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"
-    board_css = "https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css"
-    # спрайты берём из исходного репозитория
-    base_img = "https://raw.githubusercontent.com/oakmac/chessboardjs/v1.0.0/img/chesspieces/wikipedia/"
+    # JS/CSS — зеркала: cdnjs → jsDelivr
+    chess_js_urls = [
+        "https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.13.4/chess.min.js",
+        "https://cdn.jsdelivr.net/npm/chess.js@0.13.4/chess.min.js",
+    ]
+    board_js_urls = [
+        "https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js",
+        "https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/chessboard-1.0.0.min.js",
+    ]
+    board_css_urls = [
+        "https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css",
+        "https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/chessboard-1.0.0.min.css",
+    ]
 
-    _download(chess_js, js_dir / "chess.min.js")
-    _download(board_js, js_dir / "chessboard-1.0.0.min.js")
-    _download(board_css, js_dir / "chessboard-1.0.0.min.css")
+    _download_try(chess_js_urls, js_dir / "chess.min.js")
+    _download_try(board_js_urls, js_dir / "chessboard-1.0.0.min.js")
+    _download_try(board_css_urls, js_dir / "chessboard-1.0.0.min.css")
 
+    # PNG фигур — зеркала: jsDelivr по тэгу → jsDelivr по master → GitHub raw master
     pieces = ["wP","wR","wN","wB","wQ","wK","bP","bR","bN","bB","bQ","bK"]
     for p in pieces:
-        _download(base_img + f"{p}.png", img_dir / f"{p}.png")
+        urls = [
+            f"https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/img/chesspieces/wikipedia/{p}.png",
+            f"https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@master/img/chesspieces/wikipedia/{p}.png",
+            f"https://raw.githubusercontent.com/oakmac/chessboardjs/master/img/chesspieces/wikipedia/{p}.png",
+        ]
+        _download_try(urls, img_dir / f"{p}.png")
 
 # ----------------- analyzer -----------------
 class Analyzer:
@@ -199,7 +222,10 @@ class Analyzer:
         if params.get("perf_type"):
             query["perfType"] = params["perf_type"]
         url = f"https://lichess.org/api/games/user/{urllib.parse.quote(uname)}?{urllib.parse.urlencode(query)}"
-        req = urllib.request.Request(url, headers={"Accept": "application/x-chess-pgn","User-Agent":"tactikcheck/1.0"})
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/x-chess-pgn", "User-Agent": "tactikcheck/1.0"},
+        )
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
         print(f"HTTP fallback GET {url}", file=sys.stderr)
@@ -227,7 +253,8 @@ class Analyzer:
 
         attempts: List[Dict[str, Any]] = []
         if self.perf:
-            p = dict(base_params); p["perf_type"] = ",".join(self.perf)
+            p = dict(base_params)
+            p["perf_type"] = ",".join(self.perf)
             attempts.append(p)
         attempts.append(dict(base_params))
 
@@ -263,22 +290,22 @@ class Analyzer:
 
     def analyze_pgn(self, pgn_text: str) -> Dict[str, Any]:
         if not pgn_text.strip():
-            return {"game_id":"", "white":"?","black":"?","white_elo":"","black_elo":"","date":"","time_control":"","opening":"","errors":[]}
+            return {"game_id": "", "white": "?", "black": "?", "white_elo": "", "black_elo": "", "date": "", "time_control": "", "opening": "", "errors": []}
         game = chess.pgn.read_game(io.StringIO(pgn_text))
         if game is None:
-            return {"game_id":"", "white":"?","black":"?","white_elo":"","black_elo":"","date":"","time_control":"","opening":"","errors":[]}
+            return {"game_id": "", "white": "?", "black": "?", "white_elo": "", "black_elo": "", "date": "", "time_control": "", "opening": "", "errors": []}
 
         headers = game.headers
-        gid = headers.get("LichessURL","").split("/")[-1] or headers.get("Site","").split("/")[-1]
+        gid = headers.get("LichessURL", "").split("/")[-1] or headers.get("Site", "").split("/")[-1]
         result = {
             "game_id": gid,
-            "white": headers.get("White","?"),
-            "black": headers.get("Black","?"),
+            "white": headers.get("White", "?"),
+            "black": headers.get("Black", "?"),
             "white_elo": headers.get("WhiteElo"),
             "black_elo": headers.get("BlackElo"),
-            "date": headers.get("UTCDate", headers.get("Date","")),
-            "time_control": headers.get("TimeControl",""),
-            "opening": headers.get("Opening",""),
+            "date": headers.get("UTCDate", headers.get("Date", "")),
+            "time_control": headers.get("TimeControl", ""),
+            "opening": headers.get("Opening", ""),
             "errors": [],
         }
 
@@ -296,7 +323,8 @@ class Analyzer:
 
             mover_is_white = side_to_move
             if (mover_is_white and not self.who[0]) or ((not mover_is_white) and not self.who[1]):
-                board.push(move); continue
+                board.push(move)
+                continue
 
             fen_before = board.fen()
 
@@ -320,7 +348,7 @@ class Analyzer:
 
             if label and delta >= self.min_cp_show:
                 san = node.san()
-                move_no = (ply + 1)//2
+                move_no = (ply + 1) // 2
                 who_str = "white" if mover_is_white else "black"
                 result["errors"].append({
                     "ply": ply, "move_no": move_no, "who": who_str, "san": san,
@@ -335,7 +363,7 @@ class Analyzer:
         out = self.out_dir
         out.mkdir(exist_ok=True, parents=True)
 
-        # 1) Готовим ассеты локально
+        # 1) Локальные ассеты (с зеркалами)
         ensure_assets(out)
 
         # 2) Карточки
@@ -344,10 +372,10 @@ class Analyzer:
         total_errors = 0
         idx = 0
         for g in analyzed:
-            gid = g.get("game_id","") or ""
-            white = g.get("white","?"); black = g.get("black","?")
-            welo = g.get("white_elo","") or ""; belo = g.get("black_elo","") or ""
-            date = g.get("date",""); opening = g.get("opening",""); tc = g.get("time_control","")
+            gid = g.get("game_id", "") or ""
+            white = g.get("white", "?"); black = g.get("black", "?")
+            welo = g.get("white_elo", "") or ""; belo = g.get("black_elo", "") or ""
+            date = g.get("date", ""); opening = g.get("opening", ""); tc = g.get("time_control", "")
             for e in g.get("errors", []):
                 idx += 1; total_errors += 1
                 cards.append({
@@ -367,7 +395,7 @@ class Analyzer:
 
     def _build_html(self, cards: List[Dict[str, Any]], total_games: int, total_errors: int) -> str:
         def esc(s: str) -> str:
-            return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+            return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         items = []
         for c in cards:
@@ -400,7 +428,6 @@ class Analyzer:
 """)
         items_html = "".join(items)
 
-        # локальные ассеты
         tpl = """<!doctype html>
 <html lang="ru">
 <head>
