@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Lichess Error Gallery: download games, analyze with Stockfish, export a static HTML gallery (with interactive trainer).
+Lichess Error Gallery: download games, analyze with Stockfish,
+export a static HTML gallery (with interactive trainer: drag & click-to-move).
 """
 import argparse
 import datetime as dt
@@ -205,7 +206,7 @@ class Analyzer:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
         pgns = split_pgn_bulk(raw)
-        print(f"HTTP fallback got {len(pgns)} PGNs.", file=sys.stderr)  # <-- fixed
+        print(f"HTTP fallback got {len(pgns)} PGNs.", file=sys.stderr)
         return pgns
 
     def fetch_pgns(self) -> List[str]:
@@ -417,7 +418,7 @@ class Analyzer:
     <div class="trainer">
       <div id="board-{c['id']}" class="board"></div>
       <div class="train-ui">
-        <span class="msg">Сыграй лучший ход.</span>
+        <span class="msg">Сыграй лучший ход — перетяни фигуру или кликни: клетка-источник → клетка-цель.</span>
         <a class="ok-btn" href="{esc(c['link'])}" target="_blank" rel="noopener" style="display:none;">✅ Успех — открыть на Lichess</a>
       </div>
     </div>
@@ -478,6 +479,7 @@ class Analyzer:
     .tag.blunder { background: var(--blun); color:#fff; }
     .trainer { display:flex; gap:12px; align-items:flex-start; margin-top:12px; }
     .board { width: 360px; max-width: 100%%; }
+    .board .square-55d63.selected { box-shadow: 0 0 0 3px var(--accent) inset; }
     .train-ui { display:flex; flex-direction:column; gap:8px; font-size: 13px; color: var(--muted); }
     .ok-btn { background: var(--ok); color:#000; text-decoration:none; padding:8px 10px; border-radius:8px; display:inline-block; font-weight:600; }
     .bad { color: var(--bad); }
@@ -531,12 +533,14 @@ function applyFilters() {
 });
 applyFilters();
 
+// URL к спрайтам фигур (CDN)
+const PIECES_URL = 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png';
+
 // Тренажёр
 function initTrainer() {
-  qsa('.card').forEach((card, i) => {
+  qsa('.card').forEach((card) => {
     const fen = card.dataset.fen;
     const best = (card.dataset.best || '').trim().toLowerCase(); // uci
-    const link = card.dataset.link;
     const orient = (card.dataset.orient === 'white') ? 'white' : 'black';
     const boardEl = card.querySelector('.board');
     const okBtn = card.querySelector('.ok-btn');
@@ -549,14 +553,11 @@ function initTrainer() {
       position: fen,
       draggable: true,
       orientation: orient,
-      pieceTheme: undefined, // дефолтные спрайты
+      pieceTheme: PIECES_URL,
       onDrop: (source, target) => {
-        // пробуем сделать ход
         const move = game.move({ from: source, to: target, promotion: 'q' });
         if (move === null) return 'snapback';
-        // строим uci
         const uci = (source + target + (move.promotion ? move.promotion : '')).toLowerCase();
-
         if (uci === best) {
           msgEl.textContent = `Верно! Лучший ход: ${move.san}`;
           msgEl.classList.remove('bad');
@@ -564,17 +565,51 @@ function initTrainer() {
         } else {
           msgEl.textContent = `Неверно. Попробуй ещё раз.`;
           msgEl.classList.add('bad');
-          // откат
           setTimeout(() => {
             game.undo();
             board.position(game.fen());
-          }, 250);
+          }, 200);
         }
       }
     };
     const board = Chessboard(boardEl, cfg);
 
-    // Ресайз на всякий
+    // Click-to-move (клик по клеткам)
+    let selected = null;
+    boardEl.addEventListener('click', (e) => {
+      const sqEl = e.target.closest('.square-55d63');
+      if (!sqEl) return;
+      const sq = sqEl.getAttribute('data-square');
+      const clearSel = () => boardEl.querySelectorAll('.square-55d63.selected').forEach(el => el.classList.remove('selected'));
+
+      if (!selected) {
+        selected = sq;
+        clearSel();
+        sqEl.classList.add('selected');
+        return;
+      }
+      // попытка хода
+      const move = game.move({ from: selected, to: sq, promotion: 'q' });
+      clearSel();
+      selected = null;
+      if (move === null) return;
+
+      const uci = (move.from + move.to + (move.promotion ? move.promotion : '')).toLowerCase();
+      if (uci === best) {
+        msgEl.textContent = `Верно! Лучший ход: ${move.san}`;
+        msgEl.classList.remove('bad');
+        okBtn.style.display = 'inline-block';
+      } else {
+        msgEl.textContent = `Неверно. Попробуй ещё раз.`;
+        msgEl.classList.add('bad');
+        setTimeout(() => {
+          game.undo();
+          board.position(game.fen());
+        }, 200);
+      }
+      board.position(game.fen());
+    });
+
     window.addEventListener('resize', () => { board.resize(); });
   });
 }
