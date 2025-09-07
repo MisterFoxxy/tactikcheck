@@ -428,7 +428,7 @@ class Analyzer:
     .range { display:flex; align-items:center; gap:8px; }
     .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; padding: 16px; }
     .card { background: var(--card); border-radius: 12px; overflow: hidden; border:1px solid #262a31; }
-    .thumb svg { display:block; width:100%; height:auto; background:#0e1116; }
+    .thumb svg { display:block; width:100%%; height:auto; background:#0e1116; }
     .info { padding: 12px; }
     .title { display:flex; align-items:center; gap:10px; font-weight:600; }
     .title a { color: var(--text); text-decoration: none; }
