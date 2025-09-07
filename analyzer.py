@@ -98,8 +98,12 @@ class Analyzer:
 
     # ---------- Diagnostics ----------
     def _assert_user_exists(self):
+        """Проверка, что пользователь существует (приводим к списку строк)."""
+        u = self.user
+        usernames = [str(x) for x in (u if isinstance(u, (list, tuple)) else [u])]
+        print(f"Verifying user(s): {usernames}", file=sys.stderr)
         try:
-            info = self.client.users.get_by_id([self.user])
+            info = self.client.users.get_by_id(usernames)
             if not info:
                 raise RuntimeError(f"User '{self.user}' not found or has no public profile")
         except Exception as e:
@@ -150,7 +154,7 @@ class Analyzer:
         attempts: List[Dict[str, Any]] = []
         if self.perf:
             p = dict(base_params)
-            p["perf_type"] = ",".join(self.perf)
+            p["perf_type"] = ",".join(self.perf)  # snake_case для berserk
             attempts.append(p)
         # 2) запасной вариант — без perf
         attempts.append(dict(base_params))
@@ -181,7 +185,6 @@ class Analyzer:
                 "No games fetched. Likely reasons: wrong username, too strict 'perf' filter, "
                 "or the account has no public games in selected modes."
             )
-
         return all_pgns
 
     # --- Analysis ------------------------------------------------------------
@@ -374,7 +377,7 @@ class Analyzer:
 <body>
 <header>
   <h1>Ляпы под микроскопом — Error Gallery</h1>
-  <div class="stats">Просканировано игр: <b>{total_games}</b> • Найдено позиций: <b>{total_errors}</b></div>
+  <div class="stats">Просканировано игр: <b>{total_games}</b> • Найдено позицій: <b>{total_errors}</b></div>
   <div class="filters">
     <span class="chip"><input type="checkbox" id="f-inacc" checked><label for="f-inacc">Inaccuracy</label></span>
     <span class="chip"><input type="checkbox" id="f-mist" checked><label for="f-mist">Mistake</label></span>
