@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Lichess Error Gallery: download games, analyze with Stockfish,
-export a static HTML gallery (ONE interactive board per card: drag & click-to-move).
-"""
 import argparse
 import datetime as dt
 import io
@@ -15,12 +11,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Third-party
-import berserk           # pip install berserk
-import chess.pgn         # pip install python-chess
+import berserk
+import chess.pgn
 import chess.engine
-
-# ------------------------------- helpers -------------------------------------
 
 def env(var: str, default: Optional[str] = None) -> Optional[str]:
     v = os.environ.get(var)
@@ -29,12 +22,10 @@ def env(var: str, default: Optional[str] = None) -> Optional[str]:
     return v
 
 def to_millis(date_str: str) -> int:
-    """YYYY-MM-DD -> epoch millis (UTC 00:00)."""
     d = dt.datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc)
     return int(d.timestamp() * 1000)
 
 def score_to_cp(score: chess.engine.PovScore) -> int:
-    """Convert engine score to signed centipawns. Mate -> huge value."""
     if score.is_mate():
         m = score.mate()
         return 100000 if m and m > 0 else -100000
@@ -53,14 +44,11 @@ def lichess_ply_link(game_id: str, ply: int) -> str:
     return f"https://lichess.org/{game_id}#{ply}"
 
 def split_pgn_bulk(text: str) -> List[str]:
-    """Разбить «склеенный» поток PGN на отдельные партии."""
     text = text.strip()
     if not text:
         return []
     parts = re.split(r'\r?\n\r?\n(?=\[Event )', text)
     return [p.strip() for p in parts if p.strip()]
-
-# ------------------------------- core ----------------------------------------
 
 class Analyzer:
     def __init__(
@@ -76,7 +64,7 @@ class Analyzer:
         depth: int = 14,
         threads: int = 2,
         hash_mb: int = 256,
-        who: Tuple[bool, bool] = (True, True),  # (white, black)
+        who: Tuple[bool, bool] = (True, True),
         thresholds: Optional[Dict[str, int]] = None,
         min_cp_show: int = 50,
     ) -> None:
@@ -95,13 +83,10 @@ class Analyzer:
         self.thresholds = thresholds or {"inaccuracy": 50, "mistake": 150, "blunder": 300}
         self.stockfish_path = stockfish_path or env("STOCKFISH_PATH", "stockfish")
         self.client = self._make_client()
-        self.engine = None  # lazy
+        self.engine = None
         self.who = who
 
-    # ------------------------------- utils -----------------------------------
-
     def _username(self) -> str:
-        """Безопасно привести self.user к строке."""
         u = self.user
         while isinstance(u, (list, tuple)) and len(u) == 1:
             u = u[0]
@@ -137,8 +122,6 @@ class Analyzer:
                 self.engine.quit()
         except Exception:
             pass
-
-    # ------------------------------- fetch -----------------------------------
 
     def _debug_params(self, params: Dict[str, Any]):
         safe = dict(params)
@@ -185,10 +168,7 @@ class Analyzer:
         url = f"https://lichess.org/api/games/user/{urllib.parse.quote(uname)}?{urllib.parse.urlencode(query)}"
         req = urllib.request.Request(
             url,
-            headers={
-                "Accept": "application/x-chess-pgn",
-                "User-Agent": "tactikcheck/1.0",
-            },
+            headers={"Accept": "application/x-chess-pgn", "User-Agent": "tactikcheck/1.0"},
         )
         if self.token:
             req.add_header("Authorization", f"Bearer {self.token}")
@@ -202,7 +182,6 @@ class Analyzer:
     def fetch_pgns(self) -> List[str]:
         self._assert_user_exists()
         uname = self._username()
-
         base_params = {
             "max": self.max_games,
             "moves": True,
@@ -218,10 +197,9 @@ class Analyzer:
 
         attempts: List[Dict[str, Any]] = []
         if self.perf:
-            p = dict(base_params)
-            p["perf_type"] = ",".join(self.perf)
+            p = dict(base_params); p["perf_type"] = ",".join(self.perf)
             attempts.append(p)
-        attempts.append(dict(base_params))  # без фильтра perfs
+        attempts.append(dict(base_params))
 
         all_pgns: List[str] = []
         for idx, params in enumerate(attempts, 1):
@@ -252,8 +230,6 @@ class Analyzer:
         preview = (all_pgns[0] or "")[:200].replace("\n", " ")
         print(f"PGN[0] preview: {preview} ...", file=sys.stderr)
         return all_pgns
-
-    # ------------------------------ analysis ---------------------------------
 
     def analyze_pgn(self, pgn_text: str) -> Dict[str, Any]:
         if not pgn_text.strip():
@@ -293,22 +269,17 @@ class Analyzer:
 
             mover_is_white = side_to_move
             if (mover_is_white and not self.who[0]) or ((not mover_is_white) and not self.who[1]):
-                board.push(move)
-                continue
+                board.push(move); continue
 
             fen_before = board.fen()
-
-            # best line
             info_best_raw = engine.analyse(board, limit=limit, multipv=1)
             info_best = info_best_raw[0] if isinstance(info_best_raw, list) else info_best_raw
             best_cp = score_to_cp(info_best["score"].pov(side_to_move))
 
-            # played move score
             info_played_raw = engine.analyse(board, limit=limit, root_moves=[move])
             info_played = info_played_raw[0] if isinstance(info_played_raw, list) else info_played_raw
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
 
-            # robust best move via engine.play
             best_move_obj = engine.play(board, limit).move
             best_uci = best_move_obj.uci()
             best_san = board.san(best_move_obj)
@@ -317,7 +288,6 @@ class Analyzer:
 
             delta = best_cp - played_cp
             label = classify(delta, self.thresholds)
-
             board.push(move)
 
             if label and delta >= self.min_cp_show:
@@ -325,31 +295,18 @@ class Analyzer:
                 move_no = (ply + 1) // 2
                 who_str = "white" if mover_is_white else "black"
                 result["errors"].append({
-                    "ply": ply,
-                    "move_no": move_no,
-                    "who": who_str,
-                    "san": san,
-                    "cp_loss": delta,
-                    "category": label,
-                    "fen_before": fen_before,
-                    "fen_after": board.fen(),
-                    "best_uci": best_uci,
-                    "best_san": best_san,
-                    "played_uci": played_uci,
-                    "played_san": played_san,
+                    "ply": ply, "move_no": move_no, "who": who_str, "san": san,
+                    "cp_loss": delta, "category": label,
+                    "fen_before": fen_before, "fen_after": board.fen(),
+                    "best_uci": best_uci, "best_san": best_san,
+                    "played_uci": played_uci, "played_san": played_san,
                 })
 
         return result
 
-    # ------------------------------ render -----------------------------------
-
     def render_gallery(self, analyzed: List[Dict[str, Any]]):
-        out = self.out_dir
-        out.mkdir(exist_ok=True, parents=True)
-        cards = []
-        total_games = len(analyzed)
-        total_errors = 0
-
+        out = self.out_dir; out.mkdir(exist_ok=True, parents=True)
+        cards = []; total_games = len(analyzed); total_errors = 0
         idx = 0
         for g in analyzed:
             gid = g.get("game_id", "") or ""
@@ -357,17 +314,14 @@ class Analyzer:
             welo = g.get("white_elo", "") or ""; belo = g.get("black_elo", "") or ""
             date = g.get("date", ""); opening = g.get("opening", ""); tc = g.get("time_control", "")
             for e in g.get("errors", []):
-                idx += 1
-                total_errors += 1
+                idx += 1; total_errors += 1
                 cards.append({
-                    "id": idx,
-                    "game_id": gid,
+                    "id": idx, "game_id": gid,
                     "white": white, "black": black, "welo": welo, "belo": belo,
                     "date": date, "opening": opening, "tc": tc,
                     "ply": e["ply"], "move_no": e["move_no"], "san": e["san"],
                     "who": e["who"], "cp_loss": e["cp_loss"], "category": e["category"],
-                    "fen_before": e["fen_before"],
-                    "best_uci": e["best_uci"], "best_san": e["best_san"],
+                    "fen_before": e["fen_before"], "best_uci": e["best_uci"], "best_san": e["best_san"],
                     "played_uci": e["played_uci"], "played_san": e["played_san"],
                     "link": lichess_ply_link(gid, e["ply"]),
                 })
@@ -384,11 +338,10 @@ class Analyzer:
         for c in cards:
             meta = f"{esc(c['white'])} ({esc(c['welo'])}) — {esc(c['black'])} ({esc(c['belo'])})"
             sub = f"{esc(c['date'])} • {esc(c['opening'])} • {esc(c['tc'])}"
-            # ОДНА интерактивная доска: board-{id}
             items.append(f"""
 <div class="card" data-cat="{c['category']}" data-who="{c['who']}" data-cp="{c['cp_loss']}"
-     data-fen="{esc(c['fen_before'])}" data-best="{esc(c['best_uci'])}" data-link="{esc(c['link'])}" data-orient="{('white' if c['who']=='white' else 'black')}"
->
+     data-fen="{esc(c['fen_before'])}" data-best="{esc(c['best_uci'])}"
+     data-link="{esc(c['link'])}" data-orient="{('white' if c['who']=='white' else 'black')}">
   <div class="info">
     <div class="title">
       <span class="tag {c['category']}">{c['category']}</span>
@@ -402,14 +355,13 @@ class Analyzer:
     <div class="trainer">
       <div id="board-{c['id']}" class="board"></div>
       <div class="train-ui">
-        <span class="msg">Сыграй лучший ход — перетяни фигуру или кликни: клетка-источник → клетка-цель.</span>
+        <span class="msg">Сыграй лучший ход — перетяни фигуру или кликами: клетка-источник → клетка-цель.</span>
         <a class="ok-btn" href="{esc(c['link'])}" target="_blank" rel="noopener" style="display:none;">✅ Успех — открыть на Lichess</a>
       </div>
     </div>
   </div>
 </div>
 """)
-
         items_html = "".join(items)
 
         tpl = """<!doctype html>
@@ -419,54 +371,45 @@ class Analyzer:
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lichess Error Gallery</title>
 
-  <!-- Chessboard.js + chess.js (CDN) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+  <!-- Надёжные CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
   <script src="https://cdn.jsdelivr.net/npm/chess.js@0.13.4/chess.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
 
   <style>
     :root {
-      --bg: #0b0c10;
-      --card: #15181d;
-      --text: #e6e6e6;
-      --muted: #9aa4b2;
-      --inacc: #d7b300;
-      --mist:  #ff7a00;
-      --blun:  #ff3b30;
-      --chip:  #2a2f37;
-      --accent:#4ea1ff;
-      --ok:    #16c47f;
-      --bad:   #ff4757;
+      --bg: #0b0c10; --card: #15181d; --text: #e6e6e6; --muted: #9aa4b2;
+      --inacc: #d7b300; --mist: #ff7a00; --blun: #ff3b30; --chip: #2a2f37;
+      --accent:#4ea1ff; --ok: #16c47f; --bad: #ff4757;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text);}
-    header { padding: 16px 20px; position: sticky; top:0; background: rgba(11,12,16,0.9); backdrop-filter: blur(6px); border-bottom: 1px solid #222; z-index: 10; }
-    h1 { margin: 0 0 8px 0; font-size: 20px; }
-    .stats { color: var(--muted); font-size: 13px; }
+    body { margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; background: var(--bg); color: var(--text);}
+    header { padding:16px 20px; position:sticky; top:0; background:rgba(11,12,16,.9); backdrop-filter:blur(6px); border-bottom:1px solid #222; z-index:10; }
+    h1 { margin:0 0 8px 0; font-size:20px; }
+    .stats { color: var(--muted); font-size:13px; }
     .filters { display:flex; gap:12px; flex-wrap:wrap; margin-top:10px; }
-    .chip { background: var(--chip); padding: 6px 10px; border-radius: 999px; display:flex; gap:8px; align-items:center; }
+    .chip { background:var(--chip); padding:6px 10px; border-radius:999px; display:flex; gap:8px; align-items:center; }
     .chip input { transform: translateY(1px); }
-    .chip label { font-size: 13px; }
+    .chip label { font-size:13px; }
     .range { display:flex; align-items:center; gap:8px; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; padding: 16px; }
-    .card { background: var(--card); border-radius: 12px; overflow: hidden; border:1px solid #262a31; }
-    .info { padding: 12px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap:16px; padding:16px; }
+    .card { background:var(--card); border-radius:12px; overflow:hidden; border:1px solid #262a31; }
+    .info { padding:12px; }
     .title { display:flex; align-items:center; gap:10px; font-weight:600; }
-    .title a { color: var(--text); text-decoration: none; }
-    .title a:hover { color: var(--accent); }
-    .meta, .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
-    .cp { margin-top: 8px; font-variant-numeric: tabular-nums; }
-    .tag { font-size:12px; text-transform:uppercase; letter-spacing:.6px; padding:2px 8px; border-radius: 999px; }
-    .tag.inaccuracy { background: var(--inacc); color:#000; }
-    .tag.mistake { background: var(--mist); color:#000; }
-    .tag.blunder { background: var(--blun); color:#fff; }
+    .title a { color:var(--text); text-decoration:none; } .title a:hover { color:var(--accent); }
+    .meta, .sub { color:var(--muted); font-size:13px; margin-top:6px; }
+    .cp { margin-top:8px; font-variant-numeric: tabular-nums; }
+    .tag { font-size:12px; text-transform:uppercase; letter-spacing:.6px; padding:2px 8px; border-radius:999px; }
+    .tag.inaccuracy { background:var(--inacc); color:#000; }
+    .tag.mistake { background:var(--mist); color:#000; }
+    .tag.blunder { background:var(--blun); color:#fff; }
     .trainer { display:flex; gap:12px; align-items:flex-start; margin-top:12px; }
-    .board { width: 360px; max-width: 100%%; }
-    .board .square-55d63.selected { box-shadow: 0 0 0 3px var(--accent) inset; }
-    .train-ui { display:flex; flex-direction:column; gap:8px; font-size: 13px; color: var(--muted); }
-    .ok-btn { background: var(--ok); color:#000; text-decoration:none; padding:8px 10px; border-radius:8px; display:inline-block; font-weight:600; }
+    .board { width:360px; max-width:100%%; min-height:360px; background:#0e1116; border:1px solid #262a31; }
+    .board .square-55d63.selected { box-shadow:0 0 0 3px var(--accent) inset; }
+    .train-ui { display:flex; flex-direction:column; gap:8px; font-size:13px; color:var(--muted); }
+    .ok-btn { background:var(--ok); color:#000; text-decoration:none; padding:8px 10px; border-radius:8px; display:inline-block; font-weight:600; }
     .bad { color: var(--bad); }
-    footer { text-align:center; color: var(--muted); font-size:12px; padding: 16px; }
+    footer { text-align:center; color:var(--muted); font-size:12px; padding:16px; }
   </style>
 </head>
 <body>
@@ -497,7 +440,6 @@ const qsa = s => Array.from(document.querySelectorAll(s));
 const f = { inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
             white: qs('#f-white'), black: qs('#f-black'), cp: qs('#f-cp'), cpv: qs('#f-cpv') };
 
-// Фильтры карточек
 function applyFilters() {
   const show = { inaccuracy: f.inacc.checked, mistake: f.mist.checked, blunder: f.blun.checked };
   const who = { white: f.white.checked, black: f.black.checked };
@@ -516,19 +458,25 @@ function applyFilters() {
 });
 applyFilters();
 
-// URL к спрайтам фигур (CDN)
-const PIECES_URL = 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png';
+// надёжный CDN для фигур
+const PIECES_URL = 'https://cdn.jsdelivr.net/npm/@chrisoakman/chessboardjs@1.0.0/img/chesspieces/wikipedia/{piece}.png';
 
-// Инициализация всех досок (ONE board per card)
 function initTrainer() {
+  if (typeof Chess === 'undefined' || typeof Chessboard === 'undefined') {
+    console.error('Chess.js or Chessboard.js not loaded');
+    qsa('.card .train-ui .msg').forEach(el => el.textContent = 'Не удалось загрузить доску (библиотеки не подгрузились). Обновите страницу.');
+    return;
+  }
   qsa('.card').forEach((card) => {
+    if (card.dataset.init === '1') return; // чтобы не инициализировать повторно
+    card.dataset.init = '1';
+
     const fen = card.dataset.fen;
-    const best = (card.dataset.best || '').trim().toLowerCase(); // uci
+    const best = (card.dataset.best || '').trim().toLowerCase();
     const orient = (card.dataset.orient === 'white') ? 'white' : 'black';
     const boardEl = card.querySelector('.board');
     const okBtn = card.querySelector('.ok-btn');
     const msgEl = card.querySelector('.msg');
-
     if (!fen || !boardEl || !best) return;
 
     const game = new Chess(fen);
@@ -548,16 +496,14 @@ function initTrainer() {
         } else {
           msgEl.textContent = `Неверно. Попробуй ещё раз.`;
           msgEl.classList.add('bad');
-          setTimeout(() => {
-            game.undo();
-            board.position(game.fen());
-          }, 200);
+          setTimeout(() => { game.undo(); board.position(game.fen()); }, 200);
         }
       }
     };
     const board = Chessboard(boardEl, cfg);
+    board.resize(); setTimeout(() => board.resize(), 0);
 
-    // Click-to-move (клик по клеткам)
+    // клик-ту-мув
     let selected = null;
     boardEl.addEventListener('click', (e) => {
       const sqEl = e.target.closest('.square-55d63');
@@ -565,16 +511,10 @@ function initTrainer() {
       const sq = sqEl.getAttribute('data-square');
       const clearSel = () => boardEl.querySelectorAll('.square-55d63.selected').forEach(el => el.classList.remove('selected'));
 
-      if (!selected) {
-        selected = sq;
-        clearSel();
-        sqEl.classList.add('selected');
-        return;
-      }
-      // попытка хода
+      if (!selected) { selected = sq; clearSel(); sqEl.classList.add('selected'); return; }
+
       const move = game.move({ from: selected, to: sq, promotion: 'q' });
-      clearSel();
-      selected = null;
+      clearSel(); selected = null;
       if (move === null) return;
 
       const uci = (move.from + move.to + (move.promotion ? move.promotion : '')).toLowerCase();
@@ -585,39 +525,37 @@ function initTrainer() {
       } else {
         msgEl.textContent = `Неверно. Попробуй ещё раз.`;
         msgEl.classList.add('bad');
-        setTimeout(() => {
-          game.undo();
-          board.position(game.fen());
-        }, 200);
+        setTimeout(() => { game.undo(); board.position(game.fen()); }, 200);
       }
       board.position(game.fen());
     });
 
-    window.addEventListener('resize', () => { board.resize(); });
+    window.addEventListener('resize', () => board.resize());
   });
 }
+
+// гарантированная инициализация
+if (document.readyState !== 'loading') initTrainer();
 document.addEventListener('DOMContentLoaded', initTrainer);
+window.addEventListener('load', initTrainer);
 </script>
 </body>
 </html>
 """
         return tpl % {"total_games": total_games, "total_errors": total_errors, "items": items_html}
 
-# ---------------------------------- CLI --------------------------------------
-
 def main():
     p = argparse.ArgumentParser(description="Lichess Error Gallery")
-    p.add_argument("--user", required=True, help="Lichess username")
-    p.add_argument("--token", default=os.environ.get("LICHESS_TOKEN", ""), help="Lichess API token (optional)")
-    p.add_argument("--out", default="out", help="Output directory")
+    p.add_argument("--user", required=True)
+    p.add_argument("--token", default=os.environ.get("LICHESS_TOKEN", ""))
+    p.add_argument("--out", default="out")
     p.add_argument("--max-games", type=int, default=200)
-    p.add_argument("--since")
-    p.add_argument("--until")
-    p.add_argument("--perf", help="comma-separated: bullet,blitz,rapid,classical")
+    p.add_argument("--since"); p.add_argument("--until")
+    p.add_argument("--perf", help="bullet,blitz,rapid,classical")
     p.add_argument("--depth", type=int, default=14)
     p.add_argument("--threads", type=int, default=2)
     p.add_argument("--hash-mb", type=int, default=256)
-    p.add_argument("--who", default="white,black", help="which side to flag (white,black)")
+    p.add_argument("--who", default="white,black")
     p.add_argument("--min-cp", type=int, default=50)
     p.add_argument("--mistake", type=int, default=150)
     p.add_argument("--blunder", type=int, default=300)
@@ -629,20 +567,11 @@ def main():
     perf = args.perf.split(",") if args.perf else []
 
     analyzer = Analyzer(
-        user=args.user,
-        token=(args.token or None),
-        out_dir=out_dir,
-        max_games=args.max_games,
-        since=args.since,
-        until=args.until,
-        perf=perf,
+        user=args.user, token=(args.token or None), out_dir=out_dir,
+        max_games=args.max_games, since=args.since, until=args.until, perf=perf,
         stockfish_path=env("STOCKFISH_PATH", "stockfish"),
-        depth=args.depth,
-        threads=args.threads,
-        hash_mb=args.hash_mb,
-        who=who,
-        thresholds=thresholds,
-        min_cp_show=args.min_cp,
+        depth=args.depth, threads=args.threads, hash_mb=args.hash_mb,
+        who=who, thresholds=thresholds, min_cp_show=args.min_cp,
     )
 
     try:
