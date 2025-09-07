@@ -205,7 +205,7 @@ class Analyzer:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8", errors="ignore")
         pgns = split_pgn_bulk(raw)
-        print(f"HTTP fallback got {len(pgns)} PGNs.", file=sys.stderr)
+        print(f"HTTP fallback got {len(pgns)} PGNs}.", file=sys.stderr)
         return pgns
 
     def fetch_pgns(self) -> List[str]:
@@ -317,7 +317,7 @@ class Analyzer:
             info_played = info_played_raw[0] if isinstance(info_played_raw, list) else info_played_raw
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
 
-            # robust best move via engine.play (не зависит от наличия pv)
+            # robust best move via engine.play
             best_move_obj = engine.play(board, limit).move
             best_uci = best_move_obj.uci()
             best_san = board.san(best_move_obj)
@@ -477,7 +477,7 @@ class Analyzer:
     .tag.mistake { background: var(--mist); color:#000; }
     .tag.blunder { background: var(--blun); color:#fff; }
     .trainer { display:flex; gap:12px; align-items:flex-start; margin-top:12px; }
-    .board { width: 360px; max-width: 100%; }
+    .board { width: 360px; max-width: 100%%; }
     .train-ui { display:flex; flex-direction:column; gap:8px; font-size: 13px; color: var(--muted); }
     .ok-btn { background: var(--ok); color:#000; text-decoration:none; padding:8px 10px; border-radius:8px; display:inline-block; font-weight:600; }
     .bad { color: var(--bad); }
