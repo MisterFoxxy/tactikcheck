@@ -7,7 +7,7 @@ on:
         description: 'Lichess username (например: MidFoxxy)'
         required: false
       perf:
-        description: 'comma: bullet,blitz,rapid,classical (можно пусто)'
+        description: 'bullet,blitz,rapid,classical (можно пусто)'
         required: false
         default: ''
 
@@ -50,80 +50,43 @@ jobs:
         run: |
           python -V
           pip -V
-          # При желании зафиксируй версии:
-          # pip install berserk==0.14.2 python-chess==1.999
           pip install -r requirements.txt || true
           pip install berserk python-chess || true
 
-      - name: Debug • Show effective inputs
+      # Диагностика входных параметров
+      - name: Debug • Show inputs
         run: |
-          set -e
           USERNAME="${{ github.event.inputs.username }}"
           if [ -z "$USERNAME" ]; then USERNAME="${DEFAULT_USER}"; fi
-          echo "USERNAME=$USERNAME" | tee -a $GITHUB_STEP_SUMMARY
-          echo "PERF='${{ github.event.inputs.perf || env.PERF }}'" | tee -a $GITHUB_STEP_SUMMARY
-          echo "MAX_GAMES=${MAX_GAMES}, DEPTH=${DEPTH}" | tee -a $GITHUB_STEP_SUMMARY
+          echo "USERNAME=$USERNAME"
+          echo "PERF='${{ github.event.inputs.perf || env.PERF }}'"
 
+      # Профиль (curl)
       - name: Debug • curl profile
         continue-on-error: true
         env:
           USERNAME: ${{ github.event.inputs.username || env.DEFAULT_USER }}
         run: |
-          set -e
-          echo "GET https://lichess.org/api/user/${USERNAME}"
-          curl -sSfl "https://lichess.org/api/user/${USERNAME}" | head -c 400 | tr '\n' ' ' | sed 's/  */ /g'
-          echo
+          curl -sSfl "https://lichess.org/api/user/${USERNAME}" | head -c 400 | tr '\n' ' ' | sed 's/  */ /g'; echo
 
-      - name: Debug • curl 1 PGN (raw API)
+      # Сырой PGN через REST
+      - name: Debug • curl 1 PGN
         continue-on-error: true
         env:
           USERNAME: ${{ github.event.inputs.username || env.DEFAULT_USER }}
           PERF: ${{ github.event.inputs.perf || env.PERF }}
         run: |
-          set -e
           URL="https://lichess.org/api/games/user/${USERNAME}?max=1"
           if [ -n "$PERF" ]; then URL="${URL}&perfType=${PERF}"; fi
-          echo "GET $URL"
-          curl -sSfl -H 'Accept: application/x-chess-pgn' "$URL" | head -c 600 | tr '\n' ' ' | sed 's/  */ /g'
-          echo
-
-      - name: Debug • berserk smoke test (1 game)
-        continue-on-error: true
-        env:
-          USERNAME: ${{ github.event.inputs.username || env.DEFAULT_USER }}
-          PERF: ${{ github.event.inputs.perf || env.PERF }}
-        run: |
-          python - <<'PY'
-import os, sys, berserk
-u = os.environ.get("USERNAME","").strip()
-perf = os.environ.get("PERF","").strip()
-print(f"berserk smoke → user='{u}', perf='{perf}'", file=sys.stderr)
-client = berserk.Client()
-params = dict(max=1, moves=True, opening=True, clocks=False, evals=False, as_pgn=True)
-if perf:
-    params["perf_type"] = perf
-it = client.games.export_by_player(u, **params)
-cnt = 0
-for item in it:
-    cnt += 1
-    if isinstance(item, (bytes, bytearray)):
-        s = bytes(item).decode("utf-8", "ignore")
-    elif isinstance(item, str):
-        s = item
-    else:
-        s = (item or {}).get("pgn","")
-    print("PGN:", (s[:300].replace("\n"," ") if s else "EMPTY"))
-print("BERSERK_COUNT=", cnt)
-PY
+          curl -sSfl -H 'Accept: application/x-chess-pgn' "$URL" | head -c 600 | tr '\n' ' ' | sed 's/  */ /g'; echo
 
       - name: Run analyzer
         env:
           LICHESS_TOKEN: ${{ secrets.LICHESS_TOKEN }}
         run: |
-          set -euo pipefail
+          set -e
           USERNAME="${{ github.event.inputs.username }}"
           if [ -z "$USERNAME" ]; then USERNAME="${DEFAULT_USER}"; fi
-          echo "USERNAME=$USERNAME"
           python analyzer.py \
             --user "$USERNAME" \
             --perf "${{ github.event.inputs.perf || env.PERF }}" \
