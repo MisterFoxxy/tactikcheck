@@ -7,6 +7,9 @@ import argparse
 import datetime as dt
 import os
 import sys
+import re
+import urllib.request
+import urllib.parse
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -50,6 +53,15 @@ def classify(delta_cp: int, thresholds: Dict[str, int]) -> Optional[str]:
 def lichess_ply_link(game_id: str, ply: int) -> str:
     return f"https://lichess.org/{game_id}#{ply}"
 
+def split_pgn_bulk(text: str) -> List[str]:
+    """Разбить bulk-PGN на отдельные партии (робастно)."""
+    text = text.strip()
+    if not text:
+        return []
+    # Делим по двум переводам строки ПЕРЕД началом новой партии
+    parts = re.split(r'\r?\n\r?\n(?=\[Event )', text)
+    return [p.strip() for p in parts if p.strip()]
+
 # ---- Core analysis -----------------------------------------------------------
 
 class Analyzer:
@@ -70,7 +82,7 @@ class Analyzer:
         thresholds: Dict[str, int] = None,
         min_cp_show: int = 50,
     ) -> None:
-        self.user = user            # может прийти как строка/список — нормализуем позже
+        self.user = user            # может прийти как строка/список — нормализуем
         self.token = token
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -92,10 +104,8 @@ class Analyzer:
     def _username(self) -> str:
         """Превращает self.user в обычную строку. Разворачивает вложенные списки."""
         u = self.user
-        # разворачиваем одноэлементные списки/кортежи до тех пор, пока это контейнер
         while isinstance(u, (list, tuple)) and len(u) == 1:
             u = u[0]
-        # если по-прежнему список/кортеж — берём первый элемент
         if isinstance(u, (list, tuple)):
             u = u[0] if u else ""
         return str(u)
@@ -104,7 +114,6 @@ class Analyzer:
         uname = self._username()
         print(f"Verifying username: '{uname}'", file=sys.stderr)
         try:
-            # одиночный надёжный вызов
             info = self.client.users.get_public_data(uname)
             if not info or ("id" not in info and "username" not in info):
                 raise RuntimeError(f"user '{uname}' not found or profile is private")
@@ -144,6 +153,56 @@ class Analyzer:
 
     # --- Download ------------------------------------------------------------
 
+    def _download_via_berserk(self, uname: str, params: Dict[str, Any]) -> List[str]:
+        """Основной путь выгрузки через berserk."""
+        self._debug_params(params)
+        pgn_iter = self.client.games.export_by_player(uname, **params)
+        pgns: List[str] = []
+        for item in pgn_iter:
+            if isinstance(item, str):
+                pgn = item.strip()
+            elif isinstance(item, (bytes, bytearray)):
+                pgn = bytes(item).decode("utf-8", errors="ignore").strip()
+            else:
+                pgn = (item or {}).get("pgn", "").strip()
+            if pgn:
+                # Вдруг это bulk-PGN (несколько партий в одной строке)
+                if "[Event " in pgn and "\n\n[Event " in pgn:
+                    pgns.extend(split_pgn_bulk(pgn))
+                else:
+                    pgns.append(pgn)
+        return pgns
+
+    def _download_via_http(self, uname: str, params: Dict[str, Any]) -> List[str]:
+        """Резервный путь: сырое обращение к /api/games/user."""
+        query = {
+            "max": params.get("max", self.max_games),
+            "moves": "true",
+            "opening": "true",
+            "clocks": "false",
+            "evals": "false",
+        }
+        if "since" in params:
+            query["since"] = str(params["since"])
+        if "until" in params:
+            query["until"] = str(params["until"])
+        if "perf_type" in params and params["perf_type"]:
+            query["perfType"] = params["perf_type"]  # у REST camelCase
+
+        url = f"https://lichess.org/api/games/user/{urllib.parse.quote(uname)}?{urllib.parse.urlencode(query)}"
+        req = urllib.request.Request(url)
+        req.add_header("Accept", "application/x-chess-pgn")
+        req.add_header("User-Agent", "tactikcheck/1.0")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+
+        print(f"HTTP fallback GET {url}", file=sys.stderr)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        pgns = split_pgn_bulk(raw)
+        print(f"HTTP fallback got {len(pgns)} PGNs.", file=sys.stderr)
+        return pgns
+
     def fetch_pgns(self) -> List[str]:
         self._assert_user_exists()
         uname = self._username()
@@ -161,41 +220,49 @@ class Analyzer:
         if self.until:
             base_params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
 
-        # 1) попытка с perf, если задан
         attempts: List[Dict[str, Any]] = []
         if self.perf:
             p = dict(base_params)
             p["perf_type"] = ",".join(self.perf)   # snake_case для berserk
             attempts.append(p)
-        # 2) запасной вариант — без perf
-        attempts.append(dict(base_params))
+        attempts.append(dict(base_params))          # без perf
 
+        # 1) Пробуем через berserk (с perf -> без perf)
         all_pgns: List[str] = []
         for idx, params in enumerate(attempts, 1):
-            print(f"Downloading games for {uname} (attempt {idx}/{len(attempts)})...", file=sys.stderr)
-            self._debug_params(params)
+            print(f"Downloading games for {uname} via berserk (attempt {idx}/{len(attempts)})...", file=sys.stderr)
             try:
-                pgn_iter = self.client.games.export_by_player(uname, **params)
-                pgns: List[str] = []
-                for item in pgn_iter:
-                    if isinstance(item, str):
-                        pgn = item.strip()
-                    else:
-                        pgn = (item or {}).get("pgn", "").strip()
-                    if pgn:
-                        pgns.append(pgn)
-                print(f"Got {len(pgns)} PGNs on attempt {idx}.", file=sys.stderr)
+                pgns = self._download_via_berserk(uname, params)
+                print(f"Got {len(pgns)} PGNs on attempt {idx} (berserk).", file=sys.stderr)
                 all_pgns = pgns
-                if pgns:  # нашли — дальше не пробуем
+                if pgns:
                     break
             except Exception as e:
-                print(f"Fetch attempt {idx} failed: {e}", file=sys.stderr)
+                print(f"berserk attempt {idx} failed: {e}", file=sys.stderr)
+
+        # 2) Если по-прежнему пусто — HTTP fallback
+        if not all_pgns:
+            try:
+                print("Switching to HTTP fallback...", file=sys.stderr)
+                # сначала с perf (если был), потом без
+                for idx, params in enumerate(attempts, 1):
+                    pgns = self._download_via_http(uname, params)
+                    if pgns:
+                        all_pgns = pgns
+                        break
+            except Exception as e:
+                print(f"HTTP fallback failed: {e}", file=sys.stderr)
 
         if not all_pgns:
             raise RuntimeError(
                 "No games fetched. Reasons: wrong username, too strict 'perf' filter, "
                 "or account has no public games in selected modes."
             )
+
+        # Диагностика: показываем первые 200 символов первого PGN
+        preview = (all_pgns[0] or "")[:200].replace("\n", " ")
+        print(f"PGN[0] preview: {preview} ...", file=sys.stderr)
+
         return all_pgns
 
     # --- Analysis ------------------------------------------------------------
@@ -369,9 +436,9 @@ class Analyzer:
     .meta, .sub {{ color: var(--muted); font-size: 13px; margin-top: 6px; }}
     .cp {{ margin-top: 8px; font-variant-numeric: tabular-nums; }}
     .tag {{ font-size:12px; text-transform:uppercase; letter-spacing:.6px; padding:2px 8px; border-radius: 999px; }}
-    .tag.inaccuracy {{ background: var(--inacc); color:#000; }}
-    .tag.mistake {{ background: var(--mist); color:#000; }}
-    .tag.blunder {{ background: var(--blun); color:#fff; }}
+    .tag.inaccuracy {{ background: var(--inacc); color: #000; }}
+    .tag.mistake {{ background: var(--mist); color: #000; }}
+    .tag.blunder {{ background: var(--blun); color: #fff; }}
     footer {{ text-align:center; color: var(--muted); font-size:12px; padding: 16px; }}
   </style>
 </head>
