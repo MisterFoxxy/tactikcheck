@@ -1,0 +1,85 @@
+name: Lichess Error Gallery
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'MidFoxxy'
+        required: false
+      perf:
+        description: 'bullet,blitz,rapid,classical'
+        required: false
+        default: rapid,blitz
+  schedule:
+    - cron: '20 03 * * *'   # ежедневно 03:20 UTC
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: false
+
+env:
+  DEFAULT_USER: your_lichess_username   # ← ЗАМЕНИ здесь!
+  PERF: rapid,blitz
+  MAX_GAMES: '200'
+  DEPTH: '14'
+  MIN_CP: '50'
+  MISTAKE: '150'
+  BLUNDER: '300'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Stockfish
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+          which stockfish
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run analyzer
+        env:
+          LICHESS_TOKEN: ${{ secrets.LICHESS_TOKEN }}
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          if [ -z "$USERNAME" ]; then USERNAME="${DEFAULT_USER}"; fi
+          echo "USERNAME=$USERNAME"
+          python analyzer.py \
+            --user "$USERNAME" \
+            --perf "${{ github.event.inputs.perf || env.PERF }}" \
+            --max-games "${MAX_GAMES}" \
+            --depth "${DEPTH}" \
+            --min-cp "${MIN_CP}" \
+            --mistake "${MISTAKE}" \
+            --blunder "${BLUNDER}" \
+            --out out
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
