@@ -10,6 +10,7 @@ on:
         description: 'comma: bullet,blitz,rapid,classical (можно пусто)'
         required: false
         default: ''
+
 permissions:
   contents: read
   pages: write
