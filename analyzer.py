@@ -92,13 +92,12 @@ class Analyzer:
         self.engine = None  # lazy
 
     def _make_client(self):
-    # Без токена работаем анонимно, с токеном — через TokenSession.
+    # С токеном работаем через TokenSession, без токена — анонимно.
     if self.token:
-        session = berserk.TokenSession(self.token)  # без timeout
+        session = berserk.TokenSession(self.token)
+        return berserk.Client(session=session)
     else:
-        session = berserk.Session()                 # анонимная сессия
-    return berserk.Client(session=session)          # без timeout
-
+        return berserk.Client()
 
     def _engine(self) -> chess.engine.SimpleEngine:
         if self.engine is None:
