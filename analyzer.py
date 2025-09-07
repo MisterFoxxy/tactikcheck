@@ -332,7 +332,7 @@ class Analyzer:
         (out / "index.html").write_text(html, encoding="utf-8")
         print(f"Wrote gallery: {out/'index.html'}  ({total_games} games, {total_errors} flagged moves)")
 
-    def _build_html(self, cards: List[Dict[str, Any]], total_games: int, total_errors: int) -> str:
+        def _build_html(self, cards: List[Dict[str, Any]], total_games: int, total_errors: int) -> str:
         def esc(s: str) -> str:
             return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -356,14 +356,16 @@ class Analyzer:
 </div>
 """)
 
-        html = f"""<!doctype html>
+        items_html = "".join(items)
+
+        tpl = """<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Lichess Error Gallery</title>
   <style>
-    :root {{
+    :root {
       --bg: #0b0c10;
       --card: #15181d;
       --text: #e6e6e6;
@@ -373,37 +375,37 @@ class Analyzer:
       --blun:  #ff3b30;
       --chip:  #2a2f37;
       --accent:#4ea1ff;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text);}}
-    header {{ padding: 16px 20px; position: sticky; top:0; background: rgba(11,12,16,0.9); backdrop-filter: blur(6px); border-bottom: 1px solid #222; z-index: 10; }}
-    h1 {{ margin: 0 0 8px 0; font-size: 20px; }}
-    .stats {{ color: var(--muted); font-size: 13px; }}
-    .filters {{ display:flex; gap:12px; flex-wrap:wrap; margin-top:10px; }}
-    .chip {{ background: var(--chip); padding: 6px 10px; border-radius: 999px; display:flex; gap:8px; align-items:center; }}
-    .chip input {{ transform: translateY(1px); }}
-    .chip label {{ font-size: 13px; }}
-    .range {{ display:flex; align-items:center; gap:8px; }}
-    .grid {{ display:grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; padding: 16px; }}
-    .card {{ background: var(--card); border-radius: 12px; overflow: hidden; border:1px solid #262a31; }}
-    .thumb svg {{ display:block; width:100%; height:auto; background:#0e1116; }}
-    .info {{ padding: 12px; }}
-    .title {{ display:flex; align-items:center; gap:10px; font-weight:600; }}
-    .title a {{ color: var(--text); text-decoration: none; }}
-    .title a:hover {{ color: var(--accent); }}
-    .meta, .sub {{ color: var(--muted); font-size: 13px; margin-top: 6px; }}
-    .cp {{ margin-top: 8px; font-variant-numeric: tabular-nums; }}
-    .tag {{ font-size:12px; text-transform:uppercase; letter-spacing:.6px; padding:2px 8px; border-radius: 999px; }}
-    .tag.inaccuracy {{ background: var(--inacc); color:#000; }}
-    .tag.mistake {{ background: var(--mist); color:#000; }}
-    .tag.blunder {{ background: var(--blun); color:#fff; }}
-    footer {{ text-align:center; color: var(--muted); font-size:12px; padding: 16px; }}
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--text);}
+    header { padding: 16px 20px; position: sticky; top:0; background: rgba(11,12,16,0.9); backdrop-filter: blur(6px); border-bottom: 1px solid #222; z-index: 10; }
+    h1 { margin: 0 0 8px 0; font-size: 20px; }
+    .stats { color: var(--muted); font-size: 13px; }
+    .filters { display:flex; gap:12px; flex-wrap:wrap; margin-top:10px; }
+    .chip { background: var(--chip); padding: 6px 10px; border-radius: 999px; display:flex; gap:8px; align-items:center; }
+    .chip input { transform: translateY(1px); }
+    .chip label { font-size: 13px; }
+    .range { display:flex; align-items:center; gap:8px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; padding: 16px; }
+    .card { background: var(--card); border-radius: 12px; overflow: hidden; border:1px solid #262a31; }
+    .thumb svg { display:block; width:100%; height:auto; background:#0e1116; }
+    .info { padding: 12px; }
+    .title { display:flex; align-items:center; gap:10px; font-weight:600; }
+    .title a { color: var(--text); text-decoration: none; }
+    .title a:hover { color: var(--accent); }
+    .meta, .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    .cp { margin-top: 8px; font-variant-numeric: tabular-nums; }
+    .tag { font-size:12px; text-transform:uppercase; letter-spacing:.6px; padding:2px 8px; border-radius: 999px; }
+    .tag.inaccuracy { background: var(--inacc); color:#000; }
+    .tag.mistake { background: var(--mist); color:#000; }
+    .tag.blunder { background: var(--blun); color:#fff; }
+    footer { text-align:center; color: var(--muted); font-size:12px; padding: 16px; }
   </style>
 </head>
 <body>
 <header>
   <h1>Ляпы под микроскопом — Error Gallery</h1>
-  <div class="stats">Просканировано игр: <b>{total_games}</b> • Найдено позиций: <b>{total_errors}</b></div>
+  <div class="stats">Просканировано игр: <b>%(total_games)d</b> • Найдено позиций: <b>%(total_errors)d</b></div>
   <div class="filters">
     <span class="chip"><input type="checkbox" id="f-inacc" checked><label for="f-inacc">Inaccuracy</label></span>
     <span class="chip"><input type="checkbox" id="f-mist" checked><label for="f-mist">Mistake</label></span>
@@ -418,7 +420,7 @@ class Analyzer:
   </div>
 </header>
 <main class="grid" id="grid">
-  {''.join(items)}
+  %(items)s
 </main>
 <footer>Статический отчёт, создан локально. Ссылки ведут на соответствующие позиции в партиях на Lichess.</footer>
 <script>
@@ -426,6 +428,33 @@ const qs = s => document.querySelector(s);
 const qsa = s => Array.from(document.querySelectorAll(s));
 const f = { inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
             white: qs('#f-white'), black: qs('#f-black'), cp: qs('#f-cp'), cpv: qs('#f-cpv') };
+
+function applyFilters() {
+  const show = {
+    inaccuracy: f.inacc.checked,
+    mistake: f.mist.checked,
+    blunder: f.blun.checked
+  };
+  const who = { white: f.white.checked, black: f.black.checked };
+  const mincp = parseInt(f.cp.value, 10) || 0;
+  f.cpv.textContent = mincp;
+  qsa('.card').forEach(card => {
+    const cat = card.dataset.cat;
+    const side = card.dataset.who;
+    const cp = parseInt(card.dataset.cp, 10);
+    const ok = !!show[cat] && !!who[side] && cp >= mincp;
+    card.style.display = ok ? '' : 'none';
+  });
+}
+['change','input'].forEach(ev => {
+  [f.inacc, f.mist, f.blun, f.white, f.black, f.cp].forEach(el => el.addEventListener(ev, applyFilters));
+});
+applyFilters();
+</script>
+</body>
+</html>
+"""
+        return tpl % {"total_games": total_games, "total_errors": total_errors, "items": items_html}
 
 function applyFilters() {
   const show = { inaccuracy: f.inacc.checked, mistake: f.mist.checked, blunder: f.blun.checked };
