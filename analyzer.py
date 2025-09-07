@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-# Third‑party
+# Third-party
 import berserk  # pip install berserk
 import chess.pgn  # pip install python-chess
 import chess.engine
@@ -92,12 +92,12 @@ class Analyzer:
         self.engine = None  # lazy
 
     def _make_client(self):
-    # С токеном работаем через TokenSession, без токена — анонимно.
-    if self.token:
-        session = berserk.TokenSession(self.token)
-        return berserk.Client(session=session)
-    else:
-        return berserk.Client()
+        """Create Lichess client. No timeout arg to support berserk 0.14.x."""
+        if self.token:
+            session = berserk.TokenSession(self.token)
+            return berserk.Client(session=session)
+        else:
+            return berserk.Client()
 
     def _engine(self) -> chess.engine.SimpleEngine:
         if self.engine is None:
@@ -386,7 +386,7 @@ def main():
     p.add_argument("--blunder", type=int, default=300, help="CP loss threshold for 'blunder'")
     args = p.parse_args()
 
-    out_dir = root = Path(args.out)
+    out_dir = Path(args.out)
     thresholds = {"inaccuracy": max(0, args.min_cp), "mistake": args.mistake, "blunder": args.blunder}
     who = (("white" in args.who), ("black" in args.who))
     perf = args.perf.split(",") if args.perf else []
