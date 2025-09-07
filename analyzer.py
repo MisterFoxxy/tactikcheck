@@ -118,15 +118,14 @@ class Analyzer:
             "opening": True,
             "clocks": False,
             "evals": False,
-            "as_pgn": False,         # берём PGN из JSON
-            "pgn_in_json": True,     # просим вернуть поле "pgn"
+            "as_pgn": True,          # получаем построчные PGN-строки
         }
         if self.since:
             params["since"] = to_millis(self.since)
         if self.until:
             params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
         if self.perf:
-            params["perf_type"] = ",".join(self.perf)
+            params["perf_type"] = ",".join(self.perf)  # snake_case для berserk 0.14.x
 
         print(f"Downloading games for {self.user} (max={self.max_games})...", file=sys.stderr)
         pgn_iter = self.client.games.export_by_player(self.user, **params)
