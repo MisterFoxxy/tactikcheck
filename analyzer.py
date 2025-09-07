@@ -5,15 +5,14 @@ Lichess Error Gallery: download games, analyze with Stockfish, export a static H
 """
 import argparse
 import datetime as dt
-import json
 import os
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 # Third-party
-import berserk  # pip install berserk
-import chess.pgn  # pip install python-chess
+import berserk            # pip install berserk
+import chess.pgn          # pip install python-chess
 import chess.engine
 import chess.svg
 import io
@@ -33,12 +32,10 @@ def to_millis(date_str: str) -> int:
 
 def score_to_cp(score: chess.engine.PovScore) -> int:
     """Convert Stockfish score to signed centipawns. Mate -> huge value."""
-    s = score
-    if s.is_mate():
-        m = s.mate()
+    if score.is_mate():
+        m = score.mate()
         return 100000 if m and m > 0 else -100000
-    cp = s.score(mate_score=100000)
-    return int(cp)
+    return int(score.score(mate_score=100000))
 
 def classify(delta_cp: int, thresholds: Dict[str, int]) -> Optional[str]:
     """Return 'inaccuracy' | 'mistake' | 'blunder' or None based on cp loss (>=)."""
@@ -89,10 +86,10 @@ class Analyzer:
         self.stockfish_path = stockfish_path or env("STOCKFISH_PATH", "stockfish")
         self.client = self._make_client()
         self.engine = None  # lazy
-        self.who = who      # <-- ВАЖНО: сохраняем параметр who
+        self.who = who      # сохраняем флаг сторон
 
     def _make_client(self):
-        """Create Lichess client compatible with berserk 0.14.x (без timeout)."""
+        """Create Lichess client (совместимо с berserk 0.14.x)."""
         if self.token:
             session = berserk.TokenSession(self.token)
             return berserk.Client(session=session)
@@ -121,29 +118,52 @@ class Analyzer:
             "opening": True,
             "clocks": False,
             "evals": False,
-            "as_pgn": True,
+            "as_pgn": False,         # берём PGN из JSON
+            "pgn_in_json": True,     # просим вернуть поле "pgn"
         }
         if self.since:
             params["since"] = to_millis(self.since)
         if self.until:
             params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
         if self.perf:
-            params["perf_type"] = ",".join(self.perf)  # <-- правильное имя аргумента
+            params["perf_type"] = ",".join(self.perf)
 
         print(f"Downloading games for {self.user} (max={self.max_games})...", file=sys.stderr)
         pgn_iter = self.client.games.export_by_player(self.user, **params)
-        pgns = []
-        for i, pgn in enumerate(pgn_iter, start=1):
-            if not pgn:
-                continue
-            pgns.append(pgn if isinstance(pgn, str) else pgn.get("pgn", ""))
+
+        pgns: List[str] = []
+        for item in pgn_iter:
+            if isinstance(item, str):
+                pgn = item.strip()
+            else:
+                pgn = (item or {}).get("pgn", "").strip()
+            if pgn:
+                pgns.append(pgn)
+
         print(f"Downloaded {len(pgns)} PGNs.", file=sys.stderr)
         return pgns
 
     # --- Analysis ------------------------------------------------------------
 
     def analyze_pgn(self, pgn_text: str) -> Dict[str, Any]:
+        if not pgn_text.strip():
+            return {
+                "game_id": "",
+                "white": "?", "black": "?",
+                "white_elo": "", "black_elo": "",
+                "date": "", "time_control": "", "opening": "",
+                "errors": [],
+            }
         game = chess.pgn.read_game(io.StringIO(pgn_text))
+        if game is None:
+            return {
+                "game_id": "",
+                "white": "?", "black": "?",
+                "white_elo": "", "black_elo": "",
+                "date": "", "time_control": "", "opening": "",
+                "errors": [],
+            }
+
         headers = game.headers
         gid = headers.get("LichessURL", "").split("/")[-1] or headers.get("Site", "").split("/")[-1]
         result = {
@@ -157,9 +177,9 @@ class Analyzer:
             "opening": headers.get("Opening", ""),
             "errors": [],
         }
+
         board = game.board()
         node = game
-
         ply = 0
         engine = self._engine()
         limit = chess.engine.Limit(depth=self.depth)
@@ -182,11 +202,11 @@ class Analyzer:
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
 
             delta = best_cp - played_cp  # how much worse than best
-
             label = classify(delta, self.thresholds)
+
+            board.push(move)
+
             if label and delta >= self.min_cp_show:
-                board.push(move)
-                fen_after = board.fen()
                 san = node.san()
                 move_no = (ply + 1) // 2
                 who_str = "white" if mover_is_white else "black"
@@ -197,10 +217,8 @@ class Analyzer:
                     "san": san,
                     "cp_loss": delta,
                     "category": label,
-                    "fen_after": fen_after,
+                    "fen_after": board.fen(),
                 })
-            else:
-                board.push(move)
 
         return result
 
@@ -208,8 +226,7 @@ class Analyzer:
 
     def _svg_from_fen(self, fen: str) -> str:
         board = chess.Board(fen)
-        svg = chess.svg.board(board, size=380, coordinates=True)
-        return svg
+        return chess.svg.board(board, size=380, coordinates=True)
 
     def render_gallery(self, analyzed: List[Dict[str, Any]]):
         out = self.out_dir
@@ -219,15 +236,16 @@ class Analyzer:
         total_errors = 0
 
         for g in analyzed:
-            gid = g["game_id"] or ""
-            white = g["white"]
-            black = g["black"]
-            welo = g["white_elo"] or ""
-            belo = g["black_elo"] or ""
-            date = g["date"]
-            opening = g["opening"]
-            tc = g["time_control"]
-            for e in g["errors"]:
+            gid = g.get("game_id", "") or ""
+            white = g.get("white", "?")
+            black = g.get("black", "?")
+            welo = g.get("white_elo", "") or ""
+            belo = g.get("black_elo", "") or ""
+            date = g.get("date", "")
+            opening = g.get("opening", "")
+            tc = g.get("time_control", "")
+
+            for e in g.get("errors", []):
                 total_errors += 1
                 svg = self._svg_from_fen(e["fen_after"])
                 cards.append({
