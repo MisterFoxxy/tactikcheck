@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Lichess Error Gallery + Trainer
+Lichess Error Gallery + Trainer (chessboard.js + chess.js)
 - Загружает последние партии пользователя с Lichess
 - Анализирует Stockfish'ем
 - Находит ходы с потерей оценки (inaccuracy/mistake/blunder)
 - Рендерит статический HTML-отчёт с интерактивными досками:
-  пользователь должен найти лучший ход (перетяжкой). Верно -> «Успех!», неверно -> откат + статус.
+  пользователь должен найти лучший ход. Верно -> «Успех!», неверно -> откат.
 """
 
 from __future__ import annotations
@@ -141,6 +141,7 @@ class Analyzer:
         if self.until:
             params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
         if self.perf:
+            # berserk ждёт perf_type
             params["perf_type"] = ",".join(self.perf)
 
         print(f"Downloading games for {self.user} (max={self.max_games})...", file=sys.stderr)
@@ -183,10 +184,12 @@ class Analyzer:
             side_to_move = board.turn
             ply += 1
 
+            # оценка лучшего + сам лучший ход (UCI)
             info_best = eng.analyse(board, limit=limit)
             best_cp = score_to_cp(info_best["score"].pov(side_to_move))
             best_move_uci = eng.play(board, limit=limit).move.uci()
 
+            # оценка сыгранного
             info_played = eng.analyse(board, limit=limit, root_moves=[move])
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
 
@@ -264,31 +267,30 @@ class Analyzer:
   <div class="link"><a href="{c['link']}" target="_blank" rel="noopener">{c['game_id']}</a></div>
 
   <div class="board-wrap" id="wrap-{i}">
-    <chess-board id="board-{i}" class="board"
-                 position="{c['fen_before']}"
-                 orientation="{orient}"
-                 draggable-pieces
-                 animation-duration="200">
-    </chess-board>
-
-    <div class="help">Сыграй лучший ход — перетяни фигуру (или клик-клик). Ход другой стороны запрещён.</div>
+    <div id="board-{i}" class="board"></div>
+    <div class="help">Сыграй лучший ход — перетяни фигуру. Ход другой стороны запрещён.</div>
     <div class="status" id="status-{i}"></div>
     <button id="ok-{i}" class="ok" style="display:none">✅ Успех!</button>
   </div>
 </div>
 """)
 
-        # HTML
+        # HTML (чистый CDN, заданы pieceTheme с CDN — фигуры точно грузятся)
         html = f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Lichess Error Gallery + Trainer</title>
+
+  <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css"
+        crossorigin="anonymous"/>
+
   <style>
     :root {{
       --bg: #0b0c10; --card:#15181d; --stroke:#262a31; --text:#e6e6e6; --muted:#9aa4b2;
-      --chip:#2a2f37; --inacc:#d7b300; --mist:#ff7a00; --blun:#ff3b30; --accent:#4ea1ff;
+      --inacc:#d7b300; --mist:#ff7a00; --blun:#ff3b30; --accent:#4ea1ff;
       --good:#32d296; --bad:#ff7a00;
     }}
     * {{ box-sizing:border-box }}
@@ -305,7 +307,7 @@ class Analyzer:
     .tag.blunder {{ background:var(--blun); color:#fff }}
     .meta, .cp, .link, .help {{ color:var(--muted); font-size:13px; margin-top:6px }}
     .board-wrap {{ margin-top:10px }}
-    chess-board.board {{ width: 360px; max-width: 100%; display:block; border-radius:8px; overflow:hidden; border:1px solid var(--stroke) }}
+    .board {{ width:360px; max-width:100%; border-radius:8px; overflow:hidden; border:1px solid var(--stroke) }}
     .status {{ margin-top:8px; font-weight:600; min-height:1.2em }}
     .status.good {{ color: var(--good) }}
     .status.bad  {{ color: var(--bad) }}
@@ -319,10 +321,6 @@ class Analyzer:
     }}
     footer {{ text-align:center; color:var(--muted); font-size:12px; padding:16px }}
   </style>
-
-  <!-- Доска как web-component + логика правил -->
-  <script type="module" src="https://unpkg.com/chessboard-element?module"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.13.4/chess.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
   <header>
@@ -337,90 +335,92 @@ class Analyzer:
 
   <footer>Отчёт сгенерирован автоматически. Доски интерактивны без перехода на внешние сайты.</footer>
 
+  <!-- Зависимости: jQuery (для chessboard.js), chess.js (логика), chessboard.js (доска) -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.13.4/chess.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js" crossorigin="anonymous"></script>
+
   <script>
-  (() => {{
+  (function() {{
     function uciToSan(fen, uci) {{
       try {{
-        const g = new window.Chess();
+        var g = new window.Chess();
         g.load(fen);
-        const mv = g.move({{from: uci.slice(0,2), to: uci.slice(2,4), promotion: uci[4]}});
+        var mv = g.move({{from: uci.slice(0,2), to: uci.slice(2,4), promotion: uci[4]}});
         return mv ? mv.san : uci;
       }} catch (e) {{ return uci; }}
     }}
 
-    const tactics = Array.from(document.querySelectorAll('.card.tactic'));
-    for (const t of tactics) {{
-      const id   = t.dataset.id;
-      const fen  = t.dataset.fen;
-      const best = (t.dataset.best || '').trim().toLowerCase(); // uci
-      const bestSan = uciToSan(fen, best);
+    var cards = Array.from(document.querySelectorAll('.card.tactic'));
+    for (var i = 0; i < cards.length; i++) {{
+      (function() {{
+        var card = cards[i];
+        var id   = card.dataset.id;
+        var fen  = card.dataset.fen;
+        var best = (card.dataset.best || '').trim().toLowerCase(); // uci
+        var bestSan = uciToSan(fen, best);
 
-      const board = document.getElementById('board-' + id);
-      const wrap  = document.getElementById('wrap-' + id);
-      const st    = document.getElementById('status-' + id);
-      const okBtn = document.getElementById('ok-' + id);
+        var boardDiv = document.getElementById('board-' + id);
+        var st       = document.getElementById('status-' + id);
+        var okBtn    = document.getElementById('ok-' + id);
+        var wrap     = document.getElementById('wrap-' + id);
 
-      const game = new window.Chess();
-      try {{ game.load(fen); }} catch (e) {{ console.error('Bad FEN', fen, e); continue; }}
+        var game = new window.Chess();
+        try {{ game.load(fen); }} catch (e) {{ console.error('Bad FEN', fen, e); return; }}
 
-      let solved = false;
-      let tries  = 0;
+        var solved = false;
 
-      // Ходит только сторона позиции
-      board.addEventListener('drag-start', (e) => {{
-        if (solved) {{ e.preventDefault(); return; }}
-        const piece = e.detail.piece; // 'wP','bK',...
-        if (game.game_over()) {{ e.preventDefault(); return; }}
-        if ((game.turn() === 'w' && piece.startsWith('b')) ||
-            (game.turn() === 'b' && piece.startsWith('w'))) {{
-          e.preventDefault();
-        }}
-      }});
+        var cfg = {{
+          draggable: true,
+          position: fen,
+          orientation: (game.turn() === 'w' ? 'white' : 'black'),
+          // Критично: фигуры с CDN, а не относительно страницы
+          pieceTheme: 'https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/img/chesspieces/wikipedia/{{piece}}.png',
+          onDragStart: function(source, piece, position, orientation) {{
+            if (solved) return false;
+            if (game.game_over()) return false;
+            // запретим двигать фигуры НЕ чей ход
+            if ((game.turn() === 'w' && piece[0] === 'b') ||
+                (game.turn() === 'b' && piece[0] === 'w')) {{
+              return false;
+            }}
+          }},
+          onDrop: function(source, target) {{
+            if (solved) return 'snapback';
 
-      // Попытка хода
-      board.addEventListener('drop', (e) => {{
-        if (solved) {{ e.detail.setAction('snapback'); return; }}
+            var move = game.move({{from: source, to: target, promotion: 'q'}});
+            if (move === null) {{
+              st.textContent = 'Нелегальный ход';
+              st.className = 'status bad';
+              return 'snapback';
+            }}
 
-        const source = e.detail.source;
-        const target = e.detail.target;
+            var playedUci = (source + target + (move.promotion || '')).toLowerCase();
 
-        const move = game.move({{ from: source, to: target, promotion: 'q' }});
-        if (move === null) {{
-          // Нелегально
-          e.detail.setAction('snapback');
-          st.textContent = 'Нелегальный ход';
-          st.className = 'status bad';
-          return;
-        }}
+            if (playedUci !== best) {{
+              // неверно — откат
+              game.undo();
+              st.textContent = '❌ Неверно. Попробуй ещё.';
+              st.className = 'status bad';
+              // вибро-эффект
+              wrap.classList.remove('shake'); void wrap.offsetWidth; wrap.classList.add('shake');
+              return 'snapback';
+            }}
 
-        const playedUci = (source + target + (move.promotion || '')).toLowerCase();
+            // верно
+            solved = true;
+            st.textContent = '✅ Верно: ' + (move.san || bestSan);
+            st.className = 'status good';
+            okBtn.style.display = 'inline-block';
+          }},
+          onSnapEnd: function() {{
+            // cинхронизируем отображение с логикой (например, после взятия)
+            board.position(game.fen());
+          }}
+        }};
 
-        if (playedUci !== best) {{
-          // Неверно — откат и статус
-          tries += 1;
-          game.undo();
-          e.detail.setAction('snapback');
-          st.textContent = 'Неверно, попробуй ещё' + (tries > 1 ? ` (попыток: ${{tries}})` : '');
-          st.className = 'status bad';
-
-          // лёгкая "встряска"
-          wrap.classList.remove('shake');
-          void wrap.offsetWidth; // reflow
-          wrap.classList.add('shake');
-          return;
-        }}
-
-        // Верно
-        solved = true;
-        st.textContent = 'Верно: ' + move.san + (bestSan && bestSan !== move.san ? ` (лучший: ${{bestSan}})` : '');
-        st.className = 'status good';
-        okBtn.style.display = 'inline-block';
-      }});
-
-      // Синхронизация после анимации (например, взятие)
-      board.addEventListener('snap-end', () => {{
-        board.setPosition(game.fen());
-      }});
+        var board = window.Chessboard(boardDiv, cfg);
+      }})();
     }}
   }})();
   </script>
