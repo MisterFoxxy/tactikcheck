@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Lichess Error Gallery + интерактивный тренажёр хода.
+- Скачиваем только chess.js/chessboard.js и css.
+- PNG фигур НЕ качаем: берём с CDN через pieceTheme.
+"""
+
 import argparse
 import datetime as dt
 import io
@@ -59,26 +65,14 @@ def _download(url: str, dst: Path):
     with urllib.request.urlopen(req, timeout=60) as r, open(dst, "wb") as f:
         f.write(r.read())
 
-def _download_try(urls: List[str], dst: Path):
-    last_err = None
-    for u in urls:
-        try:
-            _download(u, dst)
-            return
-        except Exception as e:
-            last_err = e
-    raise RuntimeError(f"Failed to download {dst.name} from mirrors: {urls} ({last_err})")
-
 def ensure_assets(out_dir: Path):
     """
-    Кладём все зависимости локально, с несколькими зеркалами на случай 404.
-    chess.js + chessboard.js + css + 12 спрайтов фигур.
+    Кладём локально только chess.js + chessboard.js + css.
+    PNG фигур НЕ скачиваем — берём их с CDN в pieceTheme.
     """
     assets = out_dir / "assets"
     js_dir = assets
-    img_dir = assets / "img"
 
-    # JS/CSS — зеркала: cdnjs → jsDelivr
     chess_js_urls = [
         "https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.13.4/chess.min.js",
         "https://cdn.jsdelivr.net/npm/chess.js@0.13.4/chess.min.js",
@@ -92,19 +86,36 @@ def ensure_assets(out_dir: Path):
         "https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/chessboard-1.0.0.min.css",
     ]
 
-    _download_try(chess_js_urls, js_dir / "chess.min.js")
-    _download_try(board_js_urls, js_dir / "chessboard-1.0.0.min.js")
-    _download_try(board_css_urls, js_dir / "chessboard-1.0.0.min.css")
+    last = None
+    for u in chess_js_urls:
+        try:
+            _download(u, js_dir / "chess.min.js")
+            last = None
+            break
+        except Exception as e:
+            last = e
+    if last:
+        raise last
 
-    # PNG фигур — зеркала: jsDelivr по тэгу → jsDelivr по master → GitHub raw master
-    pieces = ["wP","wR","wN","wB","wQ","wK","bP","bR","bN","bB","bQ","bK"]
-    for p in pieces:
-        urls = [
-            f"https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@1.0.0/img/chesspieces/wikipedia/{p}.png",
-            f"https://cdn.jsdelivr.net/gh/oakmac/chessboardjs@master/img/chesspieces/wikipedia/{p}.png",
-            f"https://raw.githubusercontent.com/oakmac/chessboardjs/master/img/chesspieces/wikipedia/{p}.png",
-        ]
-        _download_try(urls, img_dir / f"{p}.png")
+    for u in board_js_urls:
+        try:
+            _download(u, js_dir / "chessboard-1.0.0.min.js")
+            last = None
+            break
+        except Exception as e:
+            last = e
+    if last:
+        raise last
+
+    for u in board_css_urls:
+        try:
+            _download(u, js_dir / "chessboard-1.0.0.min.css")
+            last = None
+            break
+        except Exception as e:
+            last = e
+    if last:
+        raise last
 
 # ----------------- analyzer -----------------
 class Analyzer:
@@ -330,7 +341,6 @@ class Analyzer:
 
             info_best_raw = engine.analyse(board, limit=limit, multipv=1)
             info_best = info_best_raw[0] if isinstance(info_best_raw, list) else info_best_raw
-            best_cp = score_to_cp(info_best["score"].pov(side_to_move))
             best_move_obj = engine.play(board, limit).move
             best_uci = best_move_obj.uci()
             best_san = board.san(best_move_obj)
@@ -340,9 +350,8 @@ class Analyzer:
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
 
             played_uci = move.uci()
-            played_san = board.san(move)
 
-            delta = best_cp - played_cp
+            delta = score_to_cp(info_best["score"].pov(side_to_move)) - played_cp
             label = classify(delta, self.thresholds)
             board.push(move)
 
@@ -355,7 +364,7 @@ class Analyzer:
                     "cp_loss": delta, "category": label,
                     "fen_before": fen_before, "fen_after": board.fen(),
                     "best_uci": best_uci, "best_san": best_san,
-                    "played_uci": played_uci, "played_san": played_san,
+                    "played_uci": played_uci, "played_san": board.san(chess.Move.from_uci(played_uci)),
                 })
         return result
 
@@ -363,10 +372,8 @@ class Analyzer:
         out = self.out_dir
         out.mkdir(exist_ok=True, parents=True)
 
-        # 1) Локальные ассеты (с зеркалами)
         ensure_assets(out)
 
-        # 2) Карточки
         cards = []
         total_games = len(analyzed)
         total_errors = 0
@@ -498,6 +505,9 @@ class Analyzer:
 <script src="assets/chess.min.js"></script>
 <script src="assets/chessboard-1.0.0.min.js"></script>
 <script>
+// CDN для фигур
+const PIECES_URL='https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/img/chesspieces/wikipedia/{piece}.png';
+
 const qs = s => document.querySelector(s);
 const qsa = s => Array.from(document.querySelectorAll(s));
 const f = { inacc: qs('#f-inacc'), mist: qs('#f-mist'), blun: qs('#f-blun'),
@@ -515,12 +525,9 @@ function applyFilters(){
 ['change','input'].forEach(ev=>[f.inacc,f.mist,f.blun,f.white,f.black,f.cp].forEach(el=>el.addEventListener(ev,applyFilters)));
 applyFilters();
 
-const PIECES_URL='assets/img/{piece}.png';
-
 function initTrainer(){
   if(typeof Chess==='undefined'||typeof Chessboard==='undefined'){
-    console.error('Chess libs not loaded');
-    qsa('.card .train-ui .msg').forEach(el=>el.textContent='Не удалось загрузить доску (локальные библиотеки не подгрузились).');
+    qsa('.card .train-ui .msg').forEach(el=>el.textContent='Не удалось загрузить доску (библиотеки не подгрузились).');
     return;
   }
   qsa('.card').forEach(card=>{
@@ -614,8 +621,10 @@ def main():
         analyzed: List[Dict[str, Any]] = []
         for idx, pgn in enumerate(pgns, 1):
             print(f"[{idx}/{len(pgns)}] Analyzing...", file=sys.stderr)
-            try: analyzed.append(analyzer.analyze_pgn(pgn))
-            except Exception as e: print(f"  Skipped game due to error: {e}", file=sys.stderr)
+            try:
+                analyzed.append(analyzer.analyze_pgn(pgn))
+            except Exception as e:
+                print(f"  Skipped game due to error: {e}", file=sys.stderr)
         analyzer.render_gallery(analyzed)
     finally:
         analyzer.close()
