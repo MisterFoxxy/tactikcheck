@@ -7,7 +7,7 @@ Lichess Error Gallery + Trainer
 - Анализирует Stockfish'ем
 - Находит ходы с потерей оценки (inaccuracy/mistake/blunder)
 - Рендерит статический HTML-отчёт с интерактивными досками:
-  пользователь должен найти лучший ход (перетяжкой). Верно -> «Успех!», неверно -> откат.
+  пользователь должен найти лучший ход (перетяжкой). Верно -> «Успех!», неверно -> откат + статус.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import io
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import berserk
 import chess
@@ -39,7 +39,6 @@ def to_millis(date_str: str) -> int:
 
 
 def score_to_cp(score: chess.engine.PovScore) -> int:
-    # mate = +/-100000
     if score.is_mate():
         m = score.mate()
         return 100000 if (m and m > 0) else -100000
@@ -120,7 +119,6 @@ class Analyzer:
     # --- загрузка
 
     def _assert_user_exists(self):
-        # Простая проверка: тянем json пользователя через public endpoint (без токена)
         import urllib.request, json
         url = f"https://lichess.org/api/user/{self.user}"
         req = urllib.request.Request(url, headers={"User-Agent": "tactikcheck"})
@@ -143,18 +141,17 @@ class Analyzer:
         if self.until:
             params["until"] = to_millis(self.until) + 24 * 3600 * 1000 - 1
         if self.perf:
-            # В berserk параметр называется perf_type (а не perfType)
             params["perf_type"] = ",".join(self.perf)
 
         print(f"Downloading games for {self.user} (max={self.max_games})...", file=sys.stderr)
         it = self.client.games.export_by_player(self.user, **params)
-        pgns: List[str] = []
+        out: List[str] = []
         for pgn in it:
             if not pgn:
                 continue
-            pgns.append(pgn if isinstance(pgn, str) else pgn.get("pgn", ""))
-        print(f"Got {len(pgns)} PGNs.", file=sys.stderr)
-        return pgns
+            out.append(pgn if isinstance(pgn, str) else pgn.get("pgn", ""))
+        print(f"Got {len(out)} PGNs.", file=sys.stderr)
+        return out
 
     # --- анализ
 
@@ -183,26 +180,21 @@ class Analyzer:
         while not node.is_end():
             node = node.variation(0)
             move = node.move
-            side_to_move = board.turn  # чей ход ПЕРЕД ходом из партии
+            side_to_move = board.turn
             ply += 1
 
-            # 1) оценка лучшего для текущей стороны
             info_best = eng.analyse(board, limit=limit)
             best_cp = score_to_cp(info_best["score"].pov(side_to_move))
-            # сам лучший ход (UCI), надёжно через play()
             best_move_uci = eng.play(board, limit=limit).move.uci()
 
-            # 2) оценка реально сыгранного хода
             info_played = eng.analyse(board, limit=limit, root_moves=[move])
             played_cp = score_to_cp(info_played["score"].pov(side_to_move))
 
             delta = best_cp - played_cp
             label = classify(delta, self.thresholds)
-
-            # если существенная потеря — сохраним позицию ДО хода + лучший ход
             if label and delta >= self.min_cp_show:
                 fen_before = board.fen()
-                san = node.san()  # SAN текущего (уже известного) хода
+                san = node.san()
                 who = "white" if side_to_move == chess.WHITE else "black"
                 meta["errors"].append({
                     "ply": ply,
@@ -216,7 +208,6 @@ class Analyzer:
                     "link": lichess_ply_link(gid, ply),
                 })
 
-            # Переходим к позиции ПОСЛЕ хода из партии
             board.push(move)
 
         return meta
@@ -253,7 +244,6 @@ class Analyzer:
         # карточки
         items = []
         for i, c in enumerate(cards, 1):
-            # ориентируем доску по стороне, которая должна ходить
             orient = "white" if c["who"] == "white" else "black"
             badge = c["category"].upper()
             items.append(f"""
@@ -273,21 +263,22 @@ class Analyzer:
   <div class="cp">Δ {c['cp_loss']} cp</div>
   <div class="link"><a href="{c['link']}" target="_blank" rel="noopener">{c['game_id']}</a></div>
 
-  <div class="board-wrap">
+  <div class="board-wrap" id="wrap-{i}">
     <chess-board id="board-{i}" class="board"
                  position="{c['fen_before']}"
                  orientation="{orient}"
                  draggable-pieces
                  animation-duration="200">
     </chess-board>
+
     <div class="help">Сыграй лучший ход — перетяни фигуру (или клик-клик). Ход другой стороны запрещён.</div>
+    <div class="status" id="status-{i}"></div>
     <button id="ok-{i}" class="ok" style="display:none">✅ Успех!</button>
   </div>
 </div>
 """)
 
-        # весь HTML (инлайн CSS + CDN скрипты; без локальных ассетов)
-        # В f-строке экранируем фигурные скобки двойными {{ }}
+        # HTML
         html = f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -298,6 +289,7 @@ class Analyzer:
     :root {{
       --bg: #0b0c10; --card:#15181d; --stroke:#262a31; --text:#e6e6e6; --muted:#9aa4b2;
       --chip:#2a2f37; --inacc:#d7b300; --mist:#ff7a00; --blun:#ff3b30; --accent:#4ea1ff;
+      --good:#32d296; --bad:#ff7a00;
     }}
     * {{ box-sizing:border-box }}
     body {{ margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif }}
@@ -314,20 +306,29 @@ class Analyzer:
     .meta, .cp, .link, .help {{ color:var(--muted); font-size:13px; margin-top:6px }}
     .board-wrap {{ margin-top:10px }}
     chess-board.board {{ width: 360px; max-width: 100%; display:block; border-radius:8px; overflow:hidden; border:1px solid var(--stroke) }}
+    .status {{ margin-top:8px; font-weight:600; min-height:1.2em }}
+    .status.good {{ color: var(--good) }}
+    .status.bad  {{ color: var(--bad) }}
     .ok {{ margin-top:10px; background:#1f6f3e; color:#fff; border:none; padding:8px 12px; border-radius:8px; cursor:pointer }}
     .ok:hover {{ filter:brightness(1.05) }}
+    .shake {{ animation: shake .25s linear 2 }}
+    @keyframes shake {{
+      0%,100% {{ transform:translateX(0) }}
+      25%     {{ transform:translateX(-4px) }}
+      75%     {{ transform:translateX(4px) }}
+    }}
     footer {{ text-align:center; color:var(--muted); font-size:12px; padding:16px }}
   </style>
 
   <!-- Доска как web-component + логика правил -->
   <script type="module" src="https://unpkg.com/chessboard-element?module"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.13.4/chess.min.js" integrity="sha512-1v6Y7rphQbqJpS6kpV7mL0k0b8f0kRr8p2r3+0Xk8j7H8mS7pVq4HkQ5xvT0vL0xG0Y4+5vCNY1Q3Q1xv7z+0w==" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.13.4/chess.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
   <header>
     <h1>Ляпы под микроскопом — Error Gallery + Trainer</h1>
     <div class="stats">Просканировано игр: <b>{total_games}</b> • Найдено позиций: <b>{total_errors}</b></div>
-    <div class="stats">Кликни/перетащи лучший ход на каждой доске. Верно — появится «Успех!», неверно — фигура откатится.</div>
+    <div class="stats">Сделай лучший ход на каждой доске. Неверный ход откатится, верный покажет «Успех!».</div>
   </header>
 
   <main class="grid" id="grid">
@@ -338,29 +339,34 @@ class Analyzer:
 
   <script>
   (() => {{
-    // Инициализация всех карточек с тактиками
+    function uciToSan(fen, uci) {{
+      try {{
+        const g = new window.Chess();
+        g.load(fen);
+        const mv = g.move({{from: uci.slice(0,2), to: uci.slice(2,4), promotion: uci[4]}});
+        return mv ? mv.san : uci;
+      }} catch (e) {{ return uci; }}
+    }}
+
     const tactics = Array.from(document.querySelectorAll('.card.tactic'));
     for (const t of tactics) {{
       const id   = t.dataset.id;
       const fen  = t.dataset.fen;
       const best = (t.dataset.best || '').trim().toLowerCase(); // uci
-      const turn = t.dataset.turn; // 'w'/'b'
+      const bestSan = uciToSan(fen, best);
 
       const board = document.getElementById('board-' + id);
+      const wrap  = document.getElementById('wrap-' + id);
+      const st    = document.getElementById('status-' + id);
       const okBtn = document.getElementById('ok-' + id);
 
-      // chess.js – логика правил/легальности
       const game = new window.Chess();
-      try {{
-        game.load(fen);
-      }} catch (e) {{
-        console.error('Bad FEN', fen, e);
-        continue;
-      }}
+      try {{ game.load(fen); }} catch (e) {{ console.error('Bad FEN', fen, e); continue; }}
 
       let solved = false;
+      let tries  = 0;
 
-      // Разрешаем двигать только фигуры стороны, чей ход в позиции
+      // Ходит только сторона позиции
       board.addEventListener('drag-start', (e) => {{
         if (solved) {{ e.preventDefault(); return; }}
         const piece = e.detail.piece; // 'wP','bK',...
@@ -371,34 +377,47 @@ class Analyzer:
         }}
       }});
 
-      // Обработка хода
+      // Попытка хода
       board.addEventListener('drop', (e) => {{
         if (solved) {{ e.detail.setAction('snapback'); return; }}
+
         const source = e.detail.source;
         const target = e.detail.target;
 
-        // Попытка применить ход (promotion по умолчанию в ферзя)
         const move = game.move({{ from: source, to: target, promotion: 'q' }});
         if (move === null) {{
+          // Нелегально
           e.detail.setAction('snapback');
+          st.textContent = 'Нелегальный ход';
+          st.className = 'status bad';
           return;
         }}
 
-        // Сравнение с лучшим ходом
         const playedUci = (source + target + (move.promotion || '')).toLowerCase();
+
         if (playedUci !== best) {{
-          // неверно — откат и возврат состояния
+          // Неверно — откат и статус
+          tries += 1;
           game.undo();
           e.detail.setAction('snapback');
+          st.textContent = 'Неверно, попробуй ещё' + (tries > 1 ? ` (попыток: ${{tries}})` : '');
+          st.className = 'status bad';
+
+          // лёгкая "встряска"
+          wrap.classList.remove('shake');
+          void wrap.offsetWidth; // reflow
+          wrap.classList.add('shake');
           return;
         }}
 
-        // Верно — фиксируем и показываем "Успех!"
+        // Верно
         solved = true;
+        st.textContent = 'Верно: ' + move.san + (bestSan && bestSan !== move.san ? ` (лучший: ${{bestSan}})` : '');
+        st.className = 'status good';
         okBtn.style.display = 'inline-block';
       }});
 
-      // После анимации синхронизируем позицию (например, если было взятие)
+      // Синхронизация после анимации (например, взятие)
       board.addEventListener('snap-end', () => {{
         board.setPosition(game.fen());
       }});
